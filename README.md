@@ -1,1 +1,1 @@
-Golden Hoop Spell for OpenCode
+# Golden Hoop Spell for OpenCode
