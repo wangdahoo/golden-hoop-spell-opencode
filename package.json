@@ -1,0 +1,23 @@
+{
+  "name": "golden-hoop-spell-opencode",
+  "version": "0.1.0",
+  "description": "Golden Hoop Spell plugin port for OpenCode — a multi-role plan dispatcher with codegraph-powered context extraction.",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "shared"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "1.4.3"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.4.3",
+    "bun-types": "latest",
+    "typescript": "^5.6.0",
+    "zod": "^3.23.0"
+  }
+}
