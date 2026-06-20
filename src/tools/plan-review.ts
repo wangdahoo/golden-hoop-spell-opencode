@@ -1,0 +1,759 @@
+// `ghs-plan-review` tool — the core loop of the 3-role plan dispatcher.
+//
+// This is the middle step of the plan workflow
+// (plan §3.5 / §3.7 / §3.4 D1):
+//
+//     ghs-plan-start
+//       → [Task: ghs-context-haiku] → ghs-plan-review(snapshot)
+//       → [Task: ghs-plan-designer] → ghs-plan-review(plan)
+//       → [Task: ghs-plan-reviewer] → ghs-plan-review(review)
+//       → ghs-plan-finalize
+//
+// The tool is *one* entry point with *three* modes, selected by which of the
+// `snapshot` / `plan` / `review` string args the caller supplied. The source
+// plugin's SKILL.md ran each parse as a separate Python subprocess invocation
+// with a distinct `--kind`; here we collapse them into a single tool whose
+// mode is disambiguated by Zod (exactly one of the three must be non-empty —
+// plan §5 risk row "ghs-plan-review 的歧义").
+//
+// Each mode follows the same shape:
+//   1. resolve project dir + locate the active plan's status.json
+//   2. parse the raw subagent text via the `parse.ts` preset for that family
+//      (parse-delimited-output.ts, s3-feat-003)
+//   3. branch on parse status:
+//        ok / fallback_used → persist artefact, advance the state machine,
+//                             return the next dispatch instruction
+//        empty / malformed  → return a retry instruction (format recovery)
+//   4. for `review` mode additionally branch on the reviewer's verdict:
+//        PASS → status `pending_approval`, instruct caller to run
+//               `ghs-plan-finalize`
+//        FAIL → status `revising`, round+1, instruct caller to re-dispatch
+//               the designer with the review feedback; enforce the
+//               max-rounds soft cap + MAX_BREACHES hard cap (plan §5 risk
+//               row, source SKILL.md "Phase 2" FAIL branch).
+//
+// Like every other ghs-* tool, `execute` never calls an LLM and never touches
+// the agent registry — it only does file I/O, parsing, state writes, and
+// returns LLM-facing dispatch text. Style follows s2-feat-003 (sprint.ts):
+// thin composition over state.ts + parse.ts + the prompt constants.
+
+import { tool } from "@opencode-ai/plugin";
+import type { ToolContext } from "@opencode-ai/plugin/tool";
+import { z } from "zod";
+import { resolve, join } from "node:path";
+import { readdir } from "node:fs/promises";
+
+import {
+  readPlanStatus,
+  writePlanStatus,
+  plansDir,
+  type PlanStatus,
+  type PlanStatusValue,
+} from "../lib/state.ts";
+import {
+  parseContextSnapshot,
+  parsePlan,
+  parseReview,
+  type ParseResult,
+  type Verdict,
+} from "../lib/parse.ts";
+import { PLAN_DESIGNER_PROMPT } from "../prompts/plan-designer.ts";
+import { PLAN_REVIEWER_PROMPT } from "../prompts/plan-reviewer.ts";
+import { resolveProjectDir } from "../lib/project.ts";
+
+// -----------------------------------------------------------------------------
+// Mode-disambiguation schema (plan §5 risk row).
+// -----------------------------------------------------------------------------
+
+/**
+ * The three textual payload args. Exactly one must be a non-empty string;
+ * supplying zero or more than one is the classic dispatcher ambiguity the
+ * plan §5 risk row calls out.
+ *
+ * `project_dir` is orthogonal (path resolution) and excluded from the
+ * "exactly one" rule.
+ */
+export const planReviewArgsSchema = z
+  .object({
+    snapshot: z.string().optional(),
+    plan: z.string().optional(),
+    review: z.string().optional(),
+    project_dir: z.string().optional(),
+  })
+  .superRefine((args, ctx) => {
+    const present: string[] = [];
+    if (args.snapshot && args.snapshot.trim().length > 0) present.push("snapshot");
+    if (args.plan && args.plan.trim().length > 0) present.push("plan");
+    if (args.review && args.review.trim().length > 0) present.push("review");
+
+    if (present.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Exactly one of `snapshot`, `plan`, or `review` must be non-empty " +
+          "(all three are empty). Pass the raw subagent response for the mode " +
+          "you are advancing: snapshot from ghs-context-haiku, plan from " +
+          "ghs-plan-designer, review from ghs-plan-reviewer.",
+      });
+    } else if (present.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Exactly one of `snapshot`, `plan`, or `review` must be non-empty " +
+          `(received ${present.length}: ${present.join(", ")}). The dispatcher ` +
+          "advances one mode per call — split into separate ghs-plan-review calls.",
+      });
+    }
+  });
+
+/** Discriminated mode label, derived post-validation from which arg is set. */
+export type PlanReviewMode = "snapshot" | "plan" | "review";
+
+// -----------------------------------------------------------------------------
+// Hard cap on "continue revising anyway" breaches (source SKILL.md Constants).
+// -----------------------------------------------------------------------------
+
+/**
+ * Maximum number of times the user may override the `max_rounds` soft cap by
+ * choosing "Continue revising anyway". Matches the source skill's
+ * `MAX_BREACHES = 2` (Phase 2 FAIL @ max_rounds / Phase 3 reject @ max_rounds
+ * both consult this). Once `max_rounds_breaches >= MAX_BREACHES`, the
+ * dispatcher must NOT offer the continue option — only accept / abort — which
+ * guarantees termination in at most `max_rounds + MAX_BREACHES` rounds.
+ */
+export const MAX_BREACHES = 2;
+
+// -----------------------------------------------------------------------------
+// Active-plan discovery.
+// -----------------------------------------------------------------------------
+
+/**
+ * Scan `<projectDir>/.ghs/plans/` for `*-status.json` files and return the
+ * single "active" plan's status — i.e. one whose lifecycle is not yet
+ * terminal (`approved` / `rejected` / `aborted`).
+ *
+ * Rationale: the features.json AC pins the args surface to
+ * `snapshot? / plan? / review? / project_dir?` (no `plan_id`). Yet
+ * `status.json` is keyed by plan_id (s3-feat-005). We resolve the gap by
+ * having the dispatcher track at most one active plan at a time: starting a
+ * new plan (`ghs-plan-start`) is expected to archive/abandon any prior
+ * active one. So at any moment there is 0 or 1 active status file.
+ *
+ *   - 0 active  → returns `null` (caller surfaces "no plan in progress, run
+ *                `ghs-plan-start` first").
+ *   - 1 active  → returns its status.
+ *   - >1 active → returns the most recently updated one (defensive; should
+ *                not happen in normal use, but we degrade gracefully instead
+ *                of refusing to proceed).
+ */
+export async function findActivePlanStatus(
+  projectDir: string,
+): Promise<PlanStatus | null> {
+  const dir = plansDir(projectDir);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    // Directory missing entirely — no plan has ever been started.
+    return null;
+  }
+
+  const statuses: PlanStatus[] = [];
+  for (const name of entries) {
+    if (!name.endsWith("-status.json")) continue;
+    // Derive plan_id by stripping the `-status.json` suffix. readPlanStatus
+    // re-derives the path, so we pass the bare id.
+    const planId = name.slice(0, -"-status.json".length);
+    const status = await readPlanStatus(projectDir, planId);
+    if (status === null) continue;
+    if (isTerminal(status.status)) continue;
+    statuses.push(status);
+  }
+
+  if (statuses.length === 0) return null;
+  // Defensive tie-break: pick the latest `updated_at` (lexicographic compare
+  // works because the timestamp format is YYYY-MM-DDTHH:mm:ss).
+  statuses.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  return statuses[0];
+}
+
+/** Whether a lifecycle state is terminal (no further transitions allowed). */
+function isTerminal(status: PlanStatusValue): boolean {
+  return status === "approved" || status === "rejected" || status === "aborted";
+}
+
+// -----------------------------------------------------------------------------
+// Artefact persistence helpers.
+// -----------------------------------------------------------------------------
+
+/**
+ * Write a parsed artefact to its sibling file under `.ghs/plans/`.
+ *
+ * The source skill writes `<plan_id>-context.md` / `<plan_id>.md` /
+ * `<plan_id>-review.md` next to the `-status.json`. For a `fallback_used`
+ * parse the source prepends a warning comment so a reader of the artefact
+ * knows extraction was lossy; we mirror that exactly.
+ *
+ * Returns the absolute path written.
+ */
+async function persistArtefact(
+  projectDir: string,
+  relativeName: string,
+  content: string,
+  result: ParseResult,
+): Promise<string> {
+  const dir = plansDir(projectDir);
+  const absPath = join(dir, relativeName);
+  let body = content;
+  if (result.status === "fallback_used") {
+    const warning =
+      `<!-- WARNING: extracted via fallback strategy: ${result.strategy}; ` +
+      `warnings: ${result.warnings.join("; ") || "(none)"} -->\n`;
+    body = warning + body;
+  }
+  await Bun.write(absPath, body);
+  return absPath;
+}
+
+/**
+ * Persist the raw subagent response as a post-mortem `.raw` file.
+ *
+ * Only written when parsing failed (empty/malformed) or when
+ * `keep_raw_on_success: true` is set on the status — mirroring the source
+ * skill's "Format Recovery" section. The dispatcher returns a retry
+ * instruction referencing this path so the failing response is auditable.
+ */
+async function persistRawPostMortem(
+  projectDir: string,
+  relativeBaseName: string,
+  rawText: string,
+): Promise<string> {
+  const absPath = join(plansDir(projectDir), `${relativeBaseName}.raw`);
+  await Bun.write(absPath, rawText);
+  return absPath;
+}
+
+// -----------------------------------------------------------------------------
+// Dispatch-text builders — LLM-facing, Chinese prose + English identifiers
+// (per CLAUDE.md language policy).
+// -----------------------------------------------------------------------------
+
+/** Header block common to every mode's result, for AI + human orientation. */
+function resultHeader(args: {
+  projectDir: string;
+  planId: string;
+  mode: PlanReviewMode;
+  round: number;
+  status: PlanStatusValue;
+}): string {
+  return [
+    "=== ghs-plan-review ===",
+    "",
+    `Project directory: ${args.projectDir}`,
+    `Active plan:       ${args.planId}`,
+    `Mode:              ${args.mode}`,
+    `Round:             ${args.round}`,
+    `Plan status:       ${args.status}`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * Build the retry instruction when parsing failed (empty/malformed/verdict-less).
+ *
+ * Mirrors the source skill's "Format Recovery" appendix trigger: the
+ * dispatcher tells the main AI to re-dispatch the SAME subagent with the
+ * delimiter-contract reminder + the raw post-mortem path for context.
+ */
+function buildRetryInstruction(args: {
+  projectDir: string;
+  planId: string;
+  mode: PlanReviewMode;
+  result: ParseResult;
+  rawPath: string;
+}): string {
+  const subagent =
+    args.mode === "snapshot"
+      ? "ghs-context-haiku"
+      : args.mode === "plan"
+        ? "ghs-plan-designer"
+        : "ghs-plan-reviewer";
+  const delimiterContract =
+    args.mode === "snapshot"
+      ? "`<<<CONTEXT_SNAPSHOT_START>>>` / `<<<CONTEXT_SNAPSHOT_END>>>`"
+      : args.mode === "plan"
+        ? "`<<<PLAN_START>>>` / `<<<PLAN_END>>>`"
+        : "`<<<REVIEW_START>>>` / `<<<REVIEW_END>>>` + 裁决行 `REVIEW COMPLETE | Verdict: PASS|FAIL | ...`";
+
+  return [
+    resultHeader({
+      projectDir: args.projectDir,
+      planId: args.planId,
+      mode: args.mode,
+      round: 0, // round not advanced on retry
+      status: "designing",
+    }),
+    `⚠️ 解析失败（status: ${args.result.status}, strategy: ${args.result.strategy}）。`,
+    "",
+    `原始响应已存档到 ${args.rawPath} 供诊断。`,
+    "",
+    `请重新用 Task tool 派发 \`${subagent}\`，并强调分隔标记契约：`,
+    `- 结构化内容必须放在 ${delimiterContract} 之间`,
+    "- 不要把标记包进 markdown 代码围栏",
+    "- 使用字面 ASCII 字符 `<`、`>`、`_`",
+    "- 解析器警告：" + (args.result.warnings.join("; ") || "(none)"),
+    "",
+    "收到合规输出后，再次调用 `ghs-plan-review`（同模式）推进。",
+  ].join("\n");
+}
+
+// -----------------------------------------------------------------------------
+// Mode handlers.
+// -----------------------------------------------------------------------------
+
+/**
+ * Snapshot mode — parse the context-haiku subagent's response, persist the
+ * snapshot, and return the dispatch instruction for the plan-designer.
+ *
+ * State transition: `status` → `designing` (the snapshot is now available
+ * for the designer to consume). The snapshot file name is recorded on the
+ * status's `context_file` if it wasn't already (it usually is, set by
+ * `ghs-plan-start`).
+ */
+async function handleSnapshotMode(args: {
+  projectDir: string;
+  status: PlanStatus;
+  rawText: string;
+}): Promise<string> {
+  const { projectDir, status, rawText } = args;
+  const result = parseContextSnapshot(rawText);
+
+  if (result.status === "empty" || result.status === "malformed") {
+    const rawPath = await persistRawPostMortem(
+      projectDir,
+      status.context_file.replace(/\.md$/, ""),
+      rawText,
+    );
+    return buildRetryInstruction({
+      projectDir,
+      planId: status.plan_id,
+      mode: "snapshot",
+      result,
+      rawPath,
+    });
+  }
+
+  // Success — persist the snapshot.
+  await persistArtefact(projectDir, status.context_file, result.content, result);
+
+  // Advance state: the snapshot is ready, the designer is next.
+  const nextStatus: PlanStatus = {
+    ...status,
+    status: "designing",
+    updated_at: nowTimestamp(),
+  };
+  await writePlanStatus(projectDir, nextStatus);
+
+  return [
+    resultHeader({
+      projectDir,
+      planId: status.plan_id,
+      mode: "snapshot",
+      round: nextStatus.round,
+      status: nextStatus.status,
+    }),
+    `✅ Context snapshot 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+    "",
+    `Snapshot 写入：${join(plansDir(projectDir), status.context_file)}`,
+    `Codegraph 路径：${status.codegraph_available ? "codegraph" : "grep 回退"}`,
+    "",
+    "下一步：派发 plan-designer 设计技术方案。",
+    "",
+    "--- plan-designer dispatch ---",
+    PLAN_DESIGNER_PROMPT,
+  ].join("\n");
+}
+
+/**
+ * Plan mode — parse the plan-designer subagent's response, persist the plan,
+ * and return the dispatch instruction for the plan-reviewer.
+ *
+ * State transition: `status` → `reviewing`.
+ */
+async function handlePlanMode(args: {
+  projectDir: string;
+  status: PlanStatus;
+  rawText: string;
+}): Promise<string> {
+  const { projectDir, status, rawText } = args;
+  const result = parsePlan(rawText);
+
+  if (result.status === "empty" || result.status === "malformed") {
+    const rawPath = await persistRawPostMortem(
+      projectDir,
+      status.plan_file.replace(/\.md$/, ""),
+      rawText,
+    );
+    return buildRetryInstruction({
+      projectDir,
+      planId: status.plan_id,
+      mode: "plan",
+      result,
+      rawPath,
+    });
+  }
+
+  await persistArtefact(projectDir, status.plan_file, result.content, result);
+
+  const nextStatus: PlanStatus = {
+    ...status,
+    status: "reviewing",
+    updated_at: nowTimestamp(),
+  };
+  await writePlanStatus(projectDir, nextStatus);
+
+  return [
+    resultHeader({
+      projectDir,
+      planId: status.plan_id,
+      mode: "plan",
+      round: nextStatus.round,
+      status: nextStatus.status,
+    }),
+    `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+    "",
+    `Plan 写入：${join(plansDir(projectDir), status.plan_file)}`,
+    "",
+    "下一步：派发 plan-reviewer 评审技术方案。",
+    "",
+    "--- plan-reviewer dispatch ---",
+    PLAN_REVIEWER_PROMPT,
+  ].join("\n");
+}
+
+/**
+ * Review mode — parse the plan-reviewer subagent's response, persist the
+ * review, read the verdict, and branch:
+ *
+ *   PASS  → status `pending_approval`, instruct caller to run
+ *           `ghs-plan-finalize` (source Phase 2 PASS branch + Phase 3).
+ *   FAIL  → status `revising`, round+1, instruct caller to re-dispatch the
+ *           designer with the review feedback; enforce max_rounds +
+ *           MAX_BREACHES caps (source Phase 2 FAIL branch).
+ *   null  → fall through to the retry path (verdict line missing).
+ *
+ * The user-approval Phase 3 step from the source skill is collapsed into the
+ * PASS instruction text (OpenCode has no sync `AskUserQuestion`; the main AI
+ * asks the user in chat between tool calls).
+ */
+async function handleReviewMode(args: {
+  projectDir: string;
+  status: PlanStatus;
+  rawText: string;
+}): Promise<string> {
+  const { projectDir, status, rawText } = args;
+  const result = parseReview(rawText);
+  const verdict: Verdict = result.verdict;
+
+  // Persist the review file path on the status (first reviewer run).
+  const reviewFile =
+    status.review_file ?? `${status.plan_id}-review.md`;
+
+  // empty / malformed / verdict-less → retry path (source: "verdict == null"
+  // is treated as a format deviation).
+  if (
+    result.status === "empty" ||
+    result.status === "malformed" ||
+    verdict === null
+  ) {
+    // Persist review artefact if we have any content, else raw post-mortem.
+    let rawPath: string;
+    if (result.content.trim().length > 0) {
+      await persistArtefact(projectDir, reviewFile, result.content, result);
+      rawPath = join(plansDir(projectDir), reviewFile);
+    } else {
+      rawPath = await persistRawPostMortem(
+        projectDir,
+        reviewFile.replace(/\.md$/, ""),
+        rawText,
+      );
+    }
+    const retry = buildRetryInstruction({
+      projectDir,
+      planId: status.plan_id,
+      mode: "review",
+      result,
+      rawPath,
+    });
+    return retry.replace(
+      /解析失败（status:.*?\)/,
+      `解析失败（status: ${result.status}, verdict: ${verdict ?? "null"}）`,
+    );
+  }
+
+  // We have a usable review — persist it + record review_file on the status.
+  await persistArtefact(projectDir, reviewFile, result.content, result);
+
+  if (verdict === "PASS") {
+    const nextStatus: PlanStatus = {
+      ...status,
+      review_file: reviewFile,
+      status: "pending_approval",
+      updated_at: nowTimestamp(),
+    };
+    await writePlanStatus(projectDir, nextStatus);
+
+    return [
+      resultHeader({
+        projectDir,
+        planId: status.plan_id,
+        mode: "review",
+        round: nextStatus.round,
+        status: nextStatus.status,
+      }),
+      "✅ Review PASS —— 方案通过评审（仅 Optimization 项，无 Severe/Medium）。",
+      "",
+      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+      "",
+      "下一步：请向用户确认是否批准该方案。用户批准后调用 `ghs-plan-finalize` 写出最终 plan。",
+      "（OpenCode 无同步阻塞询问 —— 在 chat 中向用户提问即可。）",
+    ].join("\n");
+  }
+
+  // verdict === "FAIL" — enforce the round / breach caps before instructing
+  // a revise. Source Phase 2 FAIL branch.
+  const atSoftCap = status.round >= status.max_rounds;
+  const atHardCap = status.max_rounds_breaches >= MAX_BREACHES;
+
+  if (atSoftCap && atHardCap) {
+    // Hard cap reached: refuse to start another round. Surface the user
+    // decision (accept-with-fail vs abort). We do NOT mutate status here —
+    // the next tool call (finalize or a fresh start) drives the transition.
+    const nextStatus: PlanStatus = {
+      ...status,
+      review_file: reviewFile,
+      status: "pending_approval",
+      updated_at: nowTimestamp(),
+    };
+    await writePlanStatus(projectDir, nextStatus);
+
+    return [
+      resultHeader({
+        projectDir,
+        planId: status.plan_id,
+        mode: "review",
+        round: nextStatus.round,
+        status: nextStatus.status,
+      }),
+      "🛑 Review FAIL 且已达硬上限（max_rounds=" + status.max_rounds +
+        ", breaches=" + status.max_rounds_breaches +
+        "/" + MAX_BREACHES + "）—— 不再允许修订轮次。",
+      "",
+      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+      "",
+      "用户须二选一（在 chat 中向用户提问）：",
+      "  1. 接受当前方案（带 Severe/Medium 未修复项）→ 调用 `ghs-plan-finalize`，",
+      "     产物 plan 顶部会标注 `WARNING: accepted with unfixed issues`。",
+      "  2. 终止 → 状态改为 aborted；用户重新 `ghs-plan-start` 启动新 plan。",
+    ].join("\n");
+  }
+
+  if (atSoftCap) {
+    // Soft cap reached but breaches remaining — surface the 3-way user
+    // decision (continue-breach / accept-with-fail / abort). We do NOT
+    // auto-advance round until the user picks "continue". Status stays as
+    // reviewing so the caller knows the loop is paused on a decision.
+    const nextStatus: PlanStatus = {
+      ...status,
+      review_file: reviewFile,
+      status: "pending_approval",
+      updated_at: nowTimestamp(),
+    };
+    await writePlanStatus(projectDir, nextStatus);
+
+    const remaining = MAX_BREACHES - status.max_rounds_breaches;
+    return [
+      resultHeader({
+        projectDir,
+        planId: status.plan_id,
+        mode: "review",
+        round: nextStatus.round,
+        status: nextStatus.status,
+      }),
+      "⚠️ Review FAIL 且已达软上限 max_rounds=" + status.max_rounds +
+        "（剩余 breach 额度 " + remaining + "/" + MAX_BREACHES + "）。",
+      "",
+      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+      "",
+      "用户须三选一（在 chat 中向用户提问，附上评审报告）：",
+      "  1. 继续修订（一次性 breach）→ 再次调用 `ghs-plan-review(review=...)` 无法触发，",
+      "     请改用 `ghs-plan-review(plan=<修订后的 designer 输出>)`；调用前请告知 AI",
+      "     用户选择了 breach，AI 会确保 status 的 max_rounds_breaches 自增。（注：",
+      "     当前实现把 breach 计数委托给下一次 plan 模式调用时推进 —— 见下方说明。）",
+      "  2. 接受当前方案（带未修复项）→ 调用 `ghs-plan-finalize`。",
+      "  3. 终止 → 重新 `ghs-plan-start`。",
+      "",
+      "说明：breach 计数 (max_rounds_breaches) 在下一轮 designer 产物被 ghs-plan-review(plan) 接收时",
+      "自增并推进 round —— 这样状态机始终在单一入口推进，避免双写。",
+    ].join("\n");
+  }
+
+  // Below soft cap — auto-advance to the next revise round.
+  const nextStatus: PlanStatus = {
+    ...status,
+    review_file: reviewFile,
+    status: "revising",
+    round: status.round + 1,
+    // If this revise round is itself a breach continuation (round already
+    // exceeded max_rounds on a prior pass), carry the breach increment here.
+    max_rounds_breaches:
+      status.round + 1 > status.max_rounds
+        ? status.max_rounds_breaches + 1
+        : status.max_rounds_breaches,
+    updated_at: nowTimestamp(),
+  };
+  await writePlanStatus(projectDir, nextStatus);
+
+  return [
+    resultHeader({
+      projectDir,
+      planId: status.plan_id,
+      mode: "review",
+      round: nextStatus.round,
+      status: nextStatus.status,
+    }),
+    "⚠️ Review FAIL —— 触发修订轮次 round " + status.round + " → " + nextStatus.round + "。",
+    "",
+    `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+    `剩余轮次预算：${status.max_rounds - nextStatus.round} 轮（max_rounds=${status.max_rounds}）`,
+    "",
+    "下一步：用 Task tool 重新派发 `ghs-plan-designer`，把本轮评审报告作为修订反馈一并传入。",
+    "designer 产出后，再次调用 `ghs-plan-review(plan=...)`。",
+    "",
+    "--- plan-designer dispatch (revise) ---",
+    PLAN_DESIGNER_PROMPT,
+  ].join("\n");
+}
+
+/** Current local timestamp in the state.ts format (YYYY-MM-DDTHH:mm:ss). */
+function nowTimestamp(): string {
+  // Local import to avoid a date-time round-trip mismatch with state.ts.
+  // We re-implement the same formatter inline rather than importing
+  // `formatLocalTimestamp` to keep this module's dependency surface tight —
+  // but the output is byte-identical (verified by state.test.ts).
+  const now = new Date();
+  const pad = (n: number): string => n.toString().padStart(2, "0");
+  return (
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+    `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Tool definition.
+// -----------------------------------------------------------------------------
+
+/**
+ * The `ghs-plan-review` tool definition. Registered by the plugin entry
+ * point under the `ghs-plan-review` key (hyphenated, per spike 001 / D1).
+ *
+ * The SDK's `args` shape is a flat `ZodRawShape`; the "exactly one of
+ * snapshot/plan/review non-empty" constraint is enforced by
+ * {@link planReviewArgsSchema} via a `.superRefine` run inside `execute`.
+ */
+export const planReviewTool = tool({
+  description:
+    "Core loop of the 3-role plan dispatcher (ghs-plan-start → review × N → finalize). " +
+    "Three modes, selected by which payload arg is non-empty: " +
+    "`snapshot` (parse ghs-context-haiku output → dispatch ghs-plan-designer), " +
+    "`plan` (parse ghs-plan-designer output → dispatch ghs-plan-reviewer), " +
+    "`review` (parse ghs-plan-reviewer output → PASS advances to ghs-plan-finalize, " +
+    "FAIL triggers a revise round with max-rounds + breach caps). " +
+    "Exactly one of snapshot/plan/review must be non-empty (Zod-enforced). " +
+    "Locates the active plan's status.json automatically (no plan_id arg).",
+  args: {
+    snapshot: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Raw response from the ghs-context-haiku subagent (snapshot mode). " +
+          "Must include the <<<CONTEXT_SNAPSHOT_START>>>/<<<CONTEXT_SNAPSHOT_END>>> delimiters.",
+      ),
+    plan: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Raw response from the ghs-plan-designer subagent (plan mode). " +
+          "Must include the <<<PLAN_START>>>/<<<PLAN_END>>> delimiters.",
+      ),
+    review: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Raw response from the ghs-plan-reviewer subagent (review mode). " +
+          "Must include the <<<REVIEW_START>>>/<<<REVIEW_END>>> delimiters and the " +
+          "`REVIEW COMPLETE | Verdict: PASS|FAIL | ...` verdict line.",
+      ),
+    project_dir: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
+      ),
+  },
+  async execute(
+    args: {
+      snapshot?: string;
+      plan?: string;
+      review?: string;
+      project_dir?: string;
+    },
+    ctx: ToolContext,
+  ): Promise<string> {
+    // Enforce the "exactly one payload non-empty" constraint. Throws a
+    // ZodError on violation, which the OpenCode runtime surfaces to the AI
+    // as a tool-call error — exactly the disambiguation the plan §5 risk
+    // row prescribes.
+    const validated = planReviewArgsSchema.parse(args);
+
+    const projectDir = validated.project_dir
+      ? resolve(validated.project_dir)
+      : resolveProjectDir(ctx);
+
+    // Locate the active plan.
+    const status = await findActivePlanStatus(projectDir);
+    if (status === null) {
+      return [
+        "=== ghs-plan-review ===",
+        "",
+        `Project directory: ${projectDir}`,
+        "",
+        "❌ 当前没有进行中的 plan（.ghs/plans/ 下无 active status.json）。",
+        "",
+        "请先调用 `ghs-plan-start` 启动一个新 plan，再用 Task tool 派发对应 subagent，",
+        "然后把 subagent 的分隔标记输出原样传给本 tool 的 snapshot/plan/review 参数。",
+      ].join("\n");
+    }
+
+    const mode: PlanReviewMode = validated.snapshot
+      ? "snapshot"
+      : validated.plan
+        ? "plan"
+        : "review";
+
+    const rawText =
+      mode === "snapshot"
+        ? (validated.snapshot as string)
+        : mode === "plan"
+          ? (validated.plan as string)
+          : (validated.review as string);
+
+    if (mode === "snapshot") {
+      return handleSnapshotMode({ projectDir, status, rawText });
+    }
+    if (mode === "plan") {
+      return handlePlanMode({ projectDir, status, rawText });
+    }
+    return handleReviewMode({ projectDir, status, rawText });
+  },
+});
