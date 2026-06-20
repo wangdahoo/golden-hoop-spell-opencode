@@ -1,22 +1,22 @@
 // Plugin entry point — the OpenCode plugin function.
 //
 // This module wires together everything implemented in s1-feat-005 through
-// s2-feat-003:
-//   - Registers the 6 currently-implemented tools (ghs-init / ghs-config /
-//     ghs-sprint / ghs-status / ghs-archive / ghs-force-archive) under their
-//     hyphenated keys (Phase 0 spike 001 confirmed hyphenated keys load +
-//     round-trip correctly).
+// s3-feat-009:
+//   - Registers the 9 currently-implemented tools (ghs-init / ghs-config /
+//     ghs-plan-start / ghs-plan-review / ghs-plan-finalize / ghs-sprint /
+//     ghs-status / ghs-archive / ghs-force-archive) under their hyphenated
+//     keys (Phase 0 spike 001 confirmed hyphenated keys load + round-trip
+//     correctly).
 //   - Pushes a single-line workflow hint into the AI's system prompt via the
 //     `experimental.chat.system.transform` hook (Phase 0 spike 001 confirmed
 //     strings pushed here land in the system prompt verbatim).
 //
-// The hint lists only the 6 implemented tools. The remaining 4 (ghs-code,
-// ghs-plan-start, ghs-plan-review, ghs-plan-finalize) arrive in Sprints 3-4
-// and will be added to the hint as they ship. Per spike 003 divergence, the
-// hint text uses descriptive phrasing ("codegraph MCP tools") rather than
-// hardcoding double-prefixed tool names (codegraph_codegraph_*) when those
-// tools are introduced — those names depend on the MCP server name and would
-// be brittle.
+// The hint lists the 9 implemented tools. The remaining 1 (ghs-code) arrives
+// in Sprint 4 (Phase 4) and will be added to the hint when it ships. Per
+// spike 003 divergence, the hint text uses descriptive phrasing ("codegraph
+// MCP tools") rather than hardcoding double-prefixed tool names
+// (codegraph_codegraph_*) when those tools are introduced — those names
+// depend on the MCP server name and would be brittle.
 
 import type { Plugin } from "@opencode-ai/plugin";
 
@@ -26,16 +26,18 @@ import { archiveTool } from "./tools/archive.ts";
 import { forceArchiveTool } from "./tools/force-archive.ts";
 import { configTool } from "./tools/config.ts";
 import { sprintTool } from "./tools/sprint.ts";
+import { planStartTool } from "./tools/plan-start.ts";
+import { planReviewTool } from "./tools/plan-review.ts";
+import { planFinalizeTool } from "./tools/plan-finalize.ts";
 
 /**
  * Single-line hint pushed into the AI's system prompt on every chat. Lists
- * the 6 implemented tool names (ghs-init, ghs-config, ghs-sprint, ghs-status,
- * ghs-archive, ghs-force-archive), the workflow order, and the model-config
+ * the 9 implemented tool names, the workflow order, and the model-config
  * entry point. The plan-dispatcher subagents (ghs-context-haiku /
- * ghs-plan-designer / ghs-plan-reviewer) and the plan tools
- * (ghs-plan-start / ghs-plan-review / ghs-plan-finalize / ghs-code) are NOT
- * listed yet — they arrive in Sprints 3-4 and will be added to this hint
- * when implemented (forward-compat: the hint grows as tools ship).
+ * ghs-plan-designer / ghs-plan-reviewer) are invoked by the plan tools via
+ * the Task tool; only ghs-code is NOT listed yet — it arrives in Sprint 4
+ * and will be added to this hint when implemented (forward-compat: the hint
+ * grows as tools ship).
  *
  * Kept to one line so it shows up as a single contiguous block in the
  * rendered system prompt (easier for the AI to spot). The user-facing note
@@ -43,9 +45,9 @@ import { sprintTool } from "./tools/sprint.ts";
  * but only take effect after a `ghs-config` call + OpenCode restart.
  */
 const SYSTEM_HINT_TEXT =
-  "Golden Hoop Spell (ghs) plugin — orchestrates a structured init → sprint → code → status → archive workflow. " +
-  "Tools implemented: ghs-init, ghs-config, ghs-sprint, ghs-status, ghs-archive, ghs-force-archive. " +
-  "Workflow order: ghs-init → ghs-config → ghs-sprint → (ghs-plan-start → ghs-code → ghs-status → ghs-archive). " +
+  "Golden Hoop Spell (ghs) plugin — orchestrates a structured init → plan → sprint → code → status → archive workflow. " +
+  "Tools implemented: ghs-init, ghs-config, ghs-plan-start, ghs-plan-review, ghs-plan-finalize, ghs-sprint, ghs-status, ghs-archive, ghs-force-archive. " +
+  "Workflow order: ghs-init → ghs-config → ghs-plan-start → ghs-plan-review → ghs-plan-finalize → ghs-sprint → (ghs-code → ghs-status → ghs-archive). " +
   "Model IDs for the 3 plan-dispatcher subagents are user-configurable via `.ghs/ghs.json`; after editing run `ghs-config` then restart OpenCode.";
 
 /**
@@ -60,6 +62,9 @@ export const ghsPlugin: Plugin = async () => ({
   tool: {
     "ghs-init": initTool,
     "ghs-config": configTool,
+    "ghs-plan-start": planStartTool,
+    "ghs-plan-review": planReviewTool,
+    "ghs-plan-finalize": planFinalizeTool,
     "ghs-sprint": sprintTool,
     "ghs-status": statusTool,
     "ghs-archive": archiveTool,
