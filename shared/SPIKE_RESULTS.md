@@ -519,3 +519,79 @@ All 5 architectural assumptions de-risked. Proceed with:
 
 1. **s1-feat-005** (project scaffold) — `shared/opencode.json.example` must use `["codegraph", "serve", "--mcp"]` per spike 003 finding.
 2. **s1-feat-006** through **s1-feat-014** — proceed per existing plan, with the divergences noted above baked into the relevant features.
+
+## Sprint 2 E2E Verification (s2-feat-005)
+
+**日期**: 2026-06-20
+**方法**: 通过 Bun 脚本（`spikes/sprint-e2e/run.ts`，不 commit）直接调 `ghsPlugin({}).tool[...]execute(args, mockCtx)`，用 mock ToolContext 指向 `os.tmpdir()` 下的临时项目目录。与 s1-feat-014 同一套验证路径——确定性高、覆盖面全，每个场景都拿到结构化 pass/fail 证据。
+**覆盖范围**: s2 全栈——ghs-init / ghs-sprint / ghs-status tool 层 + append-sprint / update-feature-status / append-progress-session writer 层 + auto-archive 串联。
+**前置条件**: 生产模板 `shared/agents/*.md.template` 仍是 Sprint 3 交付物，本验证临时把 `test/fixtures/agents/*.md.template` 的 3 个 stub 复制到 `shared/agents/`，跑完后删除（验证脚本运行前后 `git status` 干净）。
+
+### 验证矩阵
+
+| 场景 | 描述 | 结果 |
+|---|---|---|
+| Scenario 1 | ghs-init creates .ghs/ + .opencode/agents/ | ✅ PASS |
+| Scenario 2 | ghs-sprint appends s1 skeleton + returns planning prompt | ✅ PASS |
+| Scenario 3 | update-feature-status flips 3 features to completed | ✅ PASS |
+| Scenario 4 | ghs-status reports sprint + feature counts | ✅ PASS |
+| Scenario 5 | ghs-sprint auto-archives completed s1 when creating s2 | ✅ PASS |
+
+**总结**: 5/5 场景通过。整体状态: ✅ ALL PASS。
+
+### 场景 1: ghs-init creates .ghs/ + .opencode/agents/
+
+- **结果**: ✅ PASS
+- **证据**:
+  ghs-init returned 1436 chars
+  ✓ .ghs/features.json exists
+  ✓ .ghs/progress.md exists
+  ✓ .ghs/ghs.json exists
+  ✓ .opencode/agents/ghs-context-haiku.md exists
+  ✓ .opencode/agents/ghs-plan-designer.md exists
+  ✓ .opencode/agents/ghs-plan-reviewer.md exists
+    ✓ features.json starts with empty sprints array
+
+### 场景 2: ghs-sprint appends s1 skeleton + returns planning prompt
+
+- **结果**: ✅ PASS
+- **证据**:
+    ✓ result contains ghs-sprint header
+    ✓ result names the new sprint as s1
+    ✓ result appends the sprint-planning prompt section
+    ✓ features.json now has 1 sprint
+    ✓ s1 skeleton written with status=planning, empty features
+
+### 场景 3: update-feature-status flips 3 features to completed
+
+- **结果**: ✅ PASS
+- **证据**:
+  Injected 3 pending features (s1-feat-001/002/003)
+  ✓ s1-feat-001: completed
+  ✓ s1-feat-002: completed
+  ✓ s1-feat-003: completed
+
+### 场景 4: ghs-status reports sprint + feature counts
+
+- **结果**: ✅ PASS
+- **证据**:
+    ✓ status output has the expected header
+    ✓ status output mentions the sprint name
+    ✓ status output reports completed features
+  status output length: 365 chars
+
+### 场景 5: ghs-sprint auto-archives completed s1 when creating s2
+
+- **结果**: ✅ PASS
+- **证据**:
+  Marked s1 status=completed to trigger auto-archive
+    ✓ second ghs-sprint returned its header
+    ✓ result reports auto-archiving 1 completed sprint
+    ✓ new sprint is numbered s2 (s1 retired, not reused)
+  archived/ entries: s1_test_sprint_20260620_151602
+    ✓ s1 archived under .ghs/archived/s1_*
+    ✓ active sprints array now contains only s2
+
+### 结论
+
+Sprint 2 的核心交付物（ghs-sprint tool + 3 个 writer 模块 + sprint-planning prompt + auto-archive 链路）端到端可用。ghs-sprint 正确组合了 archive-sprint（s1-feat-008）、append-sprint（s2-feat-001）与 SPRINT_PLANNING_PROMPT（s2-feat-002）；update-feature-status 正确驱动 pending→in_progress→completed 的状态机；ghs-status 正确反映新 sprint 与 feature 计数；auto-archive 在创建 s2 时把已完成的 s1 归档到 `.ghs/archived/s1_*`。未发现 bug。
