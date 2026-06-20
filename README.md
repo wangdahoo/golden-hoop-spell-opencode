@@ -147,6 +147,23 @@ codegraph 是本插件的上下文提取后端，提供符号级代码图谱（c
 
 > `ghs-code` 的编码子代理同样由 Task tool 派发，但它是临时的（由 `ghs-code` 返回的 feature-impl 提示即时构造），不是随包发布的固定模板，故不在本表。
 
+## Slash Commands（8 个 `/ghs-*` 命令）
+
+插件安装后，8 个 `/ghs-*` 斜杠命令在**首次启动时自动注册**——通过 Plugin 的 `config` hook 注入 `cfg.command`，无需手动创建 `.md` 文件或额外重启。
+
+| 命令 | 用法 | 说明 |
+|---|---|---|
+| `/ghs-init` | `/ghs-init <项目名>` | 初始化 ghs 追踪文件 |
+| `/ghs-config` | `/ghs-config` | 重新生成子代理 markdown |
+| `/ghs-plan-start` | `/ghs-plan-start` | 启动计划生成流程 |
+| `/ghs-sprint` | `/ghs-sprint "<名称>" "<目标>"` | 创建新 sprint |
+| `/ghs-code` | `/ghs-code [feature_id] [--parallel]` | 派发 feature 实现 |
+| `/ghs-status` | `/ghs-status` | 查看项目状态 |
+| `/ghs-archive` | `/ghs-archive [--dry-run\|--list]` | 归档已完成 sprint |
+| `/ghs-force-archive` | `/ghs-force-archive <nonce>` | 强制归档所有 sprint |
+
+> 内部 dispatcher 工具 `ghs-plan-review` 和 `ghs-plan-finalize` 不提供斜杠命令——它们由 plan 工作流自动衔接，不直接面向用户。
+
 ## 工作流
 
 OpenCode 会话中的主 AI 驱动每一次状态转移，**通过 Task tool 派发隔离子代理完成 LLM 工作**。完整顺序：

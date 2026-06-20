@@ -7,6 +7,14 @@
 //     ghs-status / ghs-archive / ghs-force-archive) under their hyphenated
 //     keys — the complete plan §3.4 D2 tool surface (Phase 0 spike 001
 //     confirmed hyphenated keys load + round-trip correctly).
+//   - Injects 8 `/ghs-*` slash commands into the OpenCode Config via the
+//     `config` hook. Source analysis of OpenCode's plugin/index.ts +
+//     config/config.ts + command/index.ts confirmed that the `config` hook
+//     receives the same mutable Config object reference that the Command
+//     service later reads via `config.get()`. The hook runs during plugin
+//     initialization (before the HTTP server accepts requests), so the
+//     injected commands are available on the very first startup — no file
+//     writes or restart needed.
 //   - Pushes a single-line workflow hint into the AI's system prompt via the
 //     `experimental.chat.system.transform` hook (Phase 0 spike 001 confirmed
 //     strings pushed here land in the system prompt verbatim).
@@ -29,6 +37,7 @@ import { planStartTool } from "./tools/plan-start.ts";
 import { planReviewTool } from "./tools/plan-review.ts";
 import { planFinalizeTool } from "./tools/plan-finalize.ts";
 import { codeTool } from "./tools/code.ts";
+import { GHS_COMMANDS } from "./lib/commands.ts";
 
 /**
  * Single-line hint pushed into the AI's system prompt on every chat. Lists
@@ -47,7 +56,8 @@ const SYSTEM_HINT_TEXT =
   "Golden Hoop Spell (ghs) plugin — orchestrates a structured init → plan → sprint → code → status → archive workflow. " +
   "Tools implemented: ghs-init, ghs-config, ghs-plan-start, ghs-plan-review, ghs-plan-finalize, ghs-sprint, ghs-code, ghs-status, ghs-archive, ghs-force-archive. " +
   "Workflow order: ghs-init → ghs-config → ghs-plan-start → ghs-plan-review → ghs-plan-finalize → ghs-sprint → ghs-code → ghs-status → ghs-archive. " +
-  "Model IDs for the 3 plan-dispatcher subagents are user-configurable via `.ghs/ghs.json`; after editing run `ghs-config` then restart OpenCode.";
+  "Model IDs for the 3 plan-dispatcher subagents are user-configurable via `.ghs/ghs.json`; after editing run `ghs-config` then restart OpenCode. " +
+  "Slash commands /ghs-init, /ghs-config, /ghs-plan-start, /ghs-sprint, /ghs-code, /ghs-status, /ghs-archive, /ghs-force-archive are auto-registered on startup.";
 
 /**
  * The ghs OpenCode plugin. Default-exported from `src/index.ts`.
@@ -69,6 +79,10 @@ export const ghsPlugin: Plugin = async () => ({
     "ghs-status": statusTool,
     "ghs-archive": archiveTool,
     "ghs-force-archive": forceArchiveTool,
+  },
+  config: async (cfg) => {
+    cfg.command ??= {};
+    Object.assign(cfg.command, GHS_COMMANDS);
   },
   "experimental.chat.system.transform": async (_input, output) => {
     output.system.push(SYSTEM_HINT_TEXT);
