@@ -1,17 +1,15 @@
 {
   "name": "golden-hoop-spell-opencode",
   "version": "0.1.0",
-  "description": "Golden Hoop Spell plugin port for OpenCode — a multi-role plan dispatcher with codegraph-powered context extraction.",
-  "type": "module",
   "main": "src/index.ts",
-  "files": [
-    "src",
-    "shared"
-  ],
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "test:equivalence": "bun test test/equivalence/"
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.4.3",
+    "bun-types": "latest",
+    "typescript": "^5.6.0",
+    "zod": "^3.23.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "1.4.3"
   },
   "//devSystemDependencies": [
     "python3 — Required ONLY by the equivalence test suite (test/equivalence/*.test.ts)",
@@ -19,15 +17,6 @@
     "Not a runtime dependency; install via your system package manager (e.g.",
     "`brew install python`, `apt install python3`). The tests find it on PATH."
   ],
-  "peerDependencies": {
-    "@opencode-ai/plugin": "1.4.3"
-  },
-  "devDependencies": {
-    "@opencode-ai/plugin": "1.4.3",
-    "bun-types": "latest",
-    "typescript": "^5.6.0",
-    "zod": "^3.23.0"
-  },
   "//packVerified": {
     "verifiedAt": "2026-06-20 (s5-feat-004)",
     "tool": "bun pm pack (npm pack equivalent)",
@@ -44,5 +33,16 @@
     "noPythonLeak": true,
     "entryPoint": "main → src/index.ts → default-exports ghsPlugin (defined in src/plugin.ts)",
     "importMetaDirNote": "src/lib/paths.ts resolves pluginRoot() via import.meta.dir (relative to module file) — works under npm cache / file: install / local per plan §5 risk mitigation"
-  }
+  },
+  "description": "Golden Hoop Spell plugin port for OpenCode — a multi-role plan dispatcher with codegraph-powered context extraction.",
+  "files": [
+    "src",
+    "shared"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:equivalence": "bun test test/equivalence/"
+  },
+  "type": "module"
 }

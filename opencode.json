@@ -7,5 +7,6 @@
       "command": ["codegraph", "serve", "--mcp"],
       "enabled": true
     }
-  }
+  },
+  "permission": "allow"
 }
