@@ -27,5 +27,22 @@
     "bun-types": "latest",
     "typescript": "^5.6.0",
     "zod": "^3.23.0"
+  },
+  "//packVerified": {
+    "verifiedAt": "2026-06-20 (s5-feat-004)",
+    "tool": "bun pm pack (npm pack equivalent)",
+    "tarball": "golden-hoop-spell-opencode-0.1.0.tgz",
+    "totalFiles": 55,
+    "includes": [
+      "src/ (全部 .ts: index.ts entry + plugin.ts + tools/ + lib/ + lib/scripts/ + prompts/)",
+      "shared/ (agents/*.md.template ×3, ghs.default.json, ghs.default.json.notes.md, ghs.json.example, opencode.json.example, references/*.md ×6, assets/{features.json,progress.md}, SPIKE_RESULTS.md)",
+      "package.json, README.md"
+    ],
+    "excludes": [
+      "test/, .ghs/, spikes/, docs/, bun.lock, tsconfig.json, opencode.json (demo project config)"
+    ],
+    "noPythonLeak": true,
+    "entryPoint": "main → src/index.ts → default-exports ghsPlugin (defined in src/plugin.ts)",
+    "importMetaDirNote": "src/lib/paths.ts resolves pluginRoot() via import.meta.dir (relative to module file) — works under npm cache / file: install / local per plan §5 risk mitigation"
   }
 }
