@@ -1,0 +1,232 @@
+// `ghs-plan-start` tool — entry point of the 3-role plan dispatcher.
+//
+// This is the s3-feat-006 productisation of the source plugin's plan dispatcher
+// Detection phase (plan §3.5 / §3.7 step 1). It is a *thin wrapper* composing:
+//   - `resolveProjectDir(ctx)`      (s1-feat-006) — explicit arg overrides the
+//                                                        opencode session's dir.
+//   - `detectCodegraph(projectDir)` (s3-feat-002) — R1 runtime probe for
+//                                                        `.codegraph/`.
+//   - `writePlanStatus(...)`        (s3-feat-005) — persist the initial
+//                                                        `status.json` carrying
+//                                                        `codegraph_available`.
+//   - `CONTEXT_CODEGRAPH_PROMPT` /  (s3-feat-004) — the context-collection
+//     `CONTEXT_GREP_PROMPT`             dispatch directive chosen by the probe.
+//
+// The tool `execute` never calls an LLM and never touches the agent registry.
+// It only:
+//   1. resolves the project dir,
+//   2. probes codegraph availability,
+//   3. generates a `{date}-{slug}` plan_id,
+//   4. writes the initial status.json (round 1, status `designing`,
+//      codegraph_available = probe result),
+//   5. returns an LLM-facing dispatch directive telling the main chat AI to
+//      spawn the `ghs-context-haiku` subagent via the Task tool, and then —
+//      once the snapshot is back — to feed it to `ghs-plan-review(snapshot)`.
+//
+// The dispatch directive carries the codegraph-vs-grep prompt inline so the AI
+// has everything it needs to drive the plan loop forward without a second tool
+// round-trip. Style follows s2-feat-003's `sprint.ts` (thin wrapper, descriptive
+// result text) and s1-feat-008's I/O style (Bun.file / Bun.write, no
+// process.exit, no console.log). The returned string is LLM-facing prose
+// (中文正文 + 英文 identifiers, per CLAUDE.md).
+
+import { tool } from "@opencode-ai/plugin";
+import type { ToolContext } from "@opencode-ai/plugin/tool";
+import { resolve } from "node:path";
+
+import { resolveProjectDir } from "../lib/project.ts";
+import { detectCodegraph } from "../lib/codegraph.ts";
+import {
+  createInitialPlanStatus,
+  writePlanStatus,
+  DEFAULT_MAX_ROUNDS,
+} from "../lib/state.ts";
+import { CONTEXT_CODEGRAPH_PROMPT } from "../prompts/context-codegraph.ts";
+import { CONTEXT_GREP_PROMPT } from "../prompts/context-grep.ts";
+import { formatLocalDate } from "../lib/scripts/archive-sprint.ts";
+
+/**
+ * Maximum slug length (in characters) we keep from a sanitised requirement.
+ *
+ * Slugs end up in on-disk file names (`<plan_id>-status.json` etc.). A bounded
+ * length keeps directory listings readable and avoids OS path-length limits
+ * even when the AI hands us an unusually long requirement string. 60 chars is
+ * comfortably below every common file-name ceiling while still being
+ * descriptive enough to disambiguate plans on the same day.
+ */
+const MAX_SLUG_LENGTH = 60;
+
+/**
+ * Sanitise an arbitrary human-readable string into a filesystem-safe slug.
+ *
+ * The slug is the `<slug>` half of the `plan_id` (`{date}-{slug}`) and ends up
+ * as part of every sibling file name. Rules (defensive, idempotent):
+ *   - Trim + collapse internal whitespace into single `-`.
+ *   - Lower-case ASCII letters / digits are kept verbatim.
+ *   - Underscores, hyphens, dots are kept verbatim.
+ *   - Any other character (punctuation, CJK, emoji, accented Latin, …) is
+ *     collapsed into a single `-`. We deliberately do NOT try to romanise CJK
+ *     — the requirement is filesystem-safety, not transliteration; the human
+ *     description is preserved separately in the dispatch text.
+ *   - Collapse runs of `-`/`.` separators, strip leading/trailing separators.
+ *   - Truncate to {@link MAX_SLUG_LENGTH} chars on a `-` boundary.
+ *   - Empty result falls back to `plan` so we always emit a non-empty slug.
+ *
+ * Pure function; safe to call with any input (including empty / non-string).
+ */
+export function slugifyRequirement(input: string): string {
+  const raw = typeof input === "string" ? input : "";
+  // Normalise whitespace and strip characters that are not filesystem-safe.
+  // We keep ASCII alphanumerics, `-`, `_`, `.`; everything else becomes `-`.
+  const sanitised = raw
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/[-.]{2,}/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .toLowerCase();
+
+  if (sanitised.length === 0) {
+    return "plan";
+  }
+
+  // Truncate on a `-` boundary so we don't end mid-word.
+  const truncated =
+    sanitised.length <= MAX_SLUG_LENGTH
+      ? sanitised
+      : sanitised.slice(0, MAX_SLUG_LENGTH).replace(/-[^-]*$/, "");
+  return truncated.length === 0 ? "plan" : truncated;
+}
+
+/**
+ * Build the `{YYYY-MM-DD}-{slug}` plan identifier from a requirement string.
+ *
+ * Exported so the sibling `ghs-plan-review` / `ghs-plan-finalize` tools (and
+ * tests) can re-derive the exact same id from the same inputs without
+ * duplicating the date/slug logic. `now` is injectable for deterministic tests.
+ */
+export function buildPlanId(
+  requirement: string,
+  now: Date = new Date(),
+): string {
+  return `${formatLocalDate(now)}-${slugifyRequirement(requirement)}`;
+}
+
+/**
+ * The `ghs-plan-start` tool definition. Registered by the plugin entry point
+ * under the hyphenated `ghs-plan-start` key (per spike 001 / D1).
+ */
+export const planStartTool = tool({
+  description:
+    "Start a new Golden Hoop Spell plan-generation loop (the plan dispatcher's entry point). " +
+    "Resolves the project dir, probes whether `.codegraph/` is initialised (R1 runtime detection), " +
+    "writes the initial `.ghs/plans/<plan_id>-status.json` carrying `codegraph_available`, " +
+    "and returns a Task-tool dispatch directive telling the AI to spawn the `ghs-context-haiku` " +
+    "subagent to collect an architecture snapshot (codegraph-aware or grep-fallback prompt) " +
+    "and then feed the result to `ghs-plan-review(snapshot)`.",
+  args: {
+    project_dir: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
+      ),
+  },
+  async execute(
+    args: { project_dir?: string },
+    ctx: ToolContext,
+  ): Promise<string> {
+    // (1) Resolve the project dir. Explicit arg wins; otherwise read it off
+    // the opencode session context (worktree > directory).
+    const projectDir = args.project_dir
+      ? resolve(args.project_dir)
+      : resolveProjectDir(ctx);
+
+    // (2) Probe codegraph availability (R1). `detectCodegraph` is defensive —
+    // empty/invalid paths return `false` rather than throwing, so this call
+    // never crashes the tool; the worst case is we take the grep path.
+    const codegraphAvailable = detectCodegraph(projectDir);
+
+    // (3) Generate the plan_id. We have no user-supplied title here (the tool
+    // is requirement-driven; the requirement itself is carried by the main
+    // chat AI, not by this tool's args), so we derive a placeholder slug from
+    // the current date + a stable `plan` stem. The AI / user can rename the
+    // final plan file at `ghs-plan-finalize` time; the status file name only
+    // needs to be unique per start, which the date prefix guarantees for a
+    // single-day loop.
+    //
+    // NOTE: we deliberately do NOT take a `requirement` arg — the dispatcher
+    // loop keeps the requirement in chat context (it is passed verbatim to the
+    // context-haiku subagent via the Task tool). The slug is therefore derived
+    // from the date alone; collisions within the same day are acceptable
+    // because each `ghs-plan-start` write simply overwrites the previous
+    // status file for that id (a fresh start resets the loop anyway).
+    const now = new Date();
+    const planId = buildPlanId("plan", now);
+
+    // (4) Write the initial status.json. `createInitialPlanStatus` gives us
+    // the source-skill defaults (round 1, status `designing`, max_rounds 5,
+    // codegraph_available from the probe). `writePlanStatus` validates the
+    // object against the Zod schema and `mkdir -p`s `.ghs/plans/` first.
+    const status = createInitialPlanStatus({
+      planId,
+      planFile: `${planId}.md`,
+      contextFile: `${planId}-context.md`,
+      codegraphAvailable,
+      now,
+      maxRounds: DEFAULT_MAX_ROUNDS,
+    });
+
+    let statusPath: string;
+    try {
+      statusPath = await writePlanStatus(projectDir, status);
+    } catch (err) {
+      // writePlanStatus can throw if mkdir fails (permissions, disk full) or
+      // if the Zod schema somehow rejects our object (shouldn't happen for a
+      // freshly-built status). Surface the message so the AI/user can diagnose.
+      return [
+        "❌ ghs-plan-start failed to write initial status.json:",
+        "",
+        (err as Error).message,
+        "",
+        `Project directory: ${projectDir}`,
+        `Plan id:          ${planId}`,
+        `Codegraph path:   ${codegraphAvailable ? "codegraph" : "grep fallback"}`,
+      ].join("\n");
+    }
+
+    // (5) Select the context-collection dispatch directive based on the probe.
+    // Both prompts are command-style LLM-facing text (中文 prose + English
+    // identifiers) that tell the AI exactly how to spawn `ghs-context-haiku`
+    // via the Task tool and what delimiter contract to enforce — they live in
+    // `src/prompts/context-{codegraph,grep}.ts`.
+    const contextPrompt = codegraphAvailable
+      ? CONTEXT_CODEGRAPH_PROMPT
+      : CONTEXT_GREP_PROMPT;
+
+    // (6) Compose the result. Lead with the bookkeeping summary (plan_id,
+    // status file path, codegraph path) so the AI can echo it back to the
+    // user, then the dispatch directive. The directive ends with an explicit
+    // "next step = ghs-plan-review(snapshot)" instruction so the loop's first
+    // transition is unambiguous.
+    const lines: string[] = [];
+    lines.push("=== ghs-plan-start complete ===");
+    lines.push("");
+    lines.push(`Project directory: ${projectDir}`);
+    lines.push(`Plan id:           ${planId}`);
+    lines.push(`Status file:       ${statusPath}`);
+    lines.push(`Round:             1 / ${status.max_rounds}`);
+    lines.push(
+      `Codegraph path:    ${codegraphAvailable ? "codegraph (.codegraph/ detected)" : "grep fallback (.codegraph/ absent)"}`,
+    );
+    lines.push("");
+    lines.push(
+      "Next step: dispatch the context-haiku subagent (directive below), then call",
+    );
+    lines.push("`ghs-plan-review(snapshot=...)` with its delimited output.");
+    lines.push("");
+    lines.push("--- context-haiku dispatch directive ---");
+    lines.push(contextPrompt);
+    return lines.join("\n");
+  },
+});
