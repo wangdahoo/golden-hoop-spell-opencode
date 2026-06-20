@@ -1,0 +1,15 @@
+---
+description: Context-haiku subagent (test fixture stub). Production template lands in Sprint 3.
+mode: subagent
+model: __GHS_MODEL_CONTEXT__
+hidden: true
+---
+
+# ghs-context-haiku (fixture stub)
+
+Test fixture for `src/lib/config.ts`'s `renderAgentTemplate` / `syncAgents`.
+
+The context model is: __GHS_MODEL_CONTEXT__.
+
+(Sprint 3 will replace this body with the real prompt; the substitution
+contract — three placeholders — is what this fixture verifies.)

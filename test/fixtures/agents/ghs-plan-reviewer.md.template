@@ -1,0 +1,15 @@
+---
+description: Plan-reviewer subagent (test fixture stub). Production template lands in Sprint 3.
+mode: subagent
+model: __GHS_MODEL_REVIEWER__
+hidden: true
+---
+
+# ghs-plan-reviewer (fixture stub)
+
+Test fixture for `src/lib/config.ts`'s `renderAgentTemplate` / `syncAgents`.
+
+The reviewer model is: __GHS_MODEL_REVIEWER__.
+
+(Sprint 3 will replace this body with the real prompt; the substitution
+contract — three placeholders — is what this fixture verifies.)
