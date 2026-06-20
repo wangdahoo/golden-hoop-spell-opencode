@@ -132,11 +132,12 @@ export const configTool = tool({
     const projectDir = args.project_dir ?? resolveProjectDir(ctx);
     const root = pluginRoot();
 
-    // Gate 1: refuse to run before `ghs-init`. We check for the `.ghs/`
-    // directory itself (not just ghs.json) so users get the hint even if
-    // they hand-created a partial state.
-    const ghsDirExists = await fileExists(resolve(projectDir, ".ghs"));
-    if (!ghsDirExists) {
+    // Gate 1: refuse to run before `ghs-init`. We check for `.ghs/ghs.json`
+    // (the file ghs-init actually creates) rather than the `.ghs/` directory,
+    // because `Bun.file().exists()` returns false for directories — checking
+    // the directory would always fail.
+    const ghsJsonExists = await fileExists(resolve(projectDir, ".ghs", "ghs.json"));
+    if (!ghsJsonExists) {
       return "Run ghs-init first.";
     }
 

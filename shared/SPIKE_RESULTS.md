@@ -428,7 +428,7 @@ While building the equivalence tests (`test/equivalence/*.test.ts`) two **test-h
 | 1 | `ghs-init` 在 temp dir 中创建全部期望文件 | ✅ PASS |
 | 2 | 生成的 `.ghs/ghs.json` 与 `shared/ghs.default.json` 字节级一致 | ✅ PASS |
 | 3 | 3 个生成的 agent markdown frontmatter `model:` 字段被默认 model ID 填充 | ✅ PASS |
-| 4 | 编辑 `.ghs/ghs.json` 把 `models.context` 改为 `openai/gpt-5` 后调 `ghs-config({})` → context-haiku 的 model 被替换，另两个保持不变 | ❌ FAIL（详见下方根因） |
+| 4 | 编辑 `.ghs/ghs.json` 把 `models.context` 改为 `openai/gpt-5` 后调 `ghs-config({})` → context-haiku 的 model 被替换，另两个保持不变 | ✅ PASS（**修复后重跑通过**；初次执行时因 s1-feat-010 的目录 gate bug 失败，根因 + 修复见下方） |
 | 4b | 直接调 `syncAgents()`（绕开 ghs-config 的前置 gate）→ context-haiku 被替换，另两个保持不变 | ✅ PASS（控制组，证明渲染机制本身没问题） |
 | 5 | `ghs-status({})` 返回格式化的状态字符串 | ✅ PASS |
 | 6 | 在没有 `.ghs/` 的空目录调 `ghs-config({})` → 返回 "Run ghs-init first." 且不写任何文件 | ✅ PASS |
@@ -459,15 +459,16 @@ While building the equivalence tests (`test/equivalence/*.test.ts`) two **test-h
   - `ghs-plan-designer.md` → `zhipuai-coding-plan/glm-4.6`
   - `ghs-plan-reviewer.md` → `zhipuai-coding-plan/glm-4.6`
 
-### 场景 4：`ghs-config` 应在 `.ghs/ghs.json` 修改后重新生成（FAIL — 发现 Bug）
+### 场景 4：`ghs-config` 应在 `.ghs/ghs.json` 修改后重新生成（初 FAIL，已修复后 PASS）
 
 - **Setup**: 在场景 1 生成的基础上，编辑 `.ghs/ghs.json`，把 `models.context` 改为 `openai/gpt-5`（其余两个字段保留）。
 - **Action**: `hooks.tool["ghs-config"].execute({}, mockCtx)`。
-- **Result**: **FAIL**。
-- **Symptom**: `ghs-config` 返回 19 字符的字符串 `"Run ghs-init first."`，3 个 agent markdown 文件未被重新渲染（`ghs-context-haiku.md` 的 model 仍是默认的 `zai-coding-plan/glm-4.5-air`）。
+- **Result（初次执行）**: **FAIL**。`ghs-config` 返回 19 字符的字符串 `"Run ghs-init first."`，3 个 agent markdown 文件未被重新渲染（`ghs-context-haiku.md` 的 model 仍是默认的 `zai-coding-plan/glm-4.5-air`）。
 - **Root cause**: `src/tools/config.ts` 第 138 行的前置 gate 写的是 `await fileExists(resolve(projectDir, ".ghs"))`，而 `fileExists()` 的实现是 `Bun.file(path).exists()`。Bun 的 `Bun.file()` 语义只识别常规文件——**对目录路径始终返回 `false`**（独立验证：`Bun.file("/some/dir").exists() === false`，而 `Bun.file("/some/dir/file").exists() === true`）。
 - **Impact**: 任何已通过 `ghs-init` 初始化的项目调 `ghs-config({})` 都会被错误拒绝。也就是说，**s1-feat-010 的验收标准 #2/#3 在运行时无法满足**（单测 `test/config.test.ts` 没有覆盖 tool 层，只测了 `config.ts` 的纯函数，所以没发现）。
-- **Proposed fix (Sprint 2)**: 把 gate 改成 `await fileExists(resolve(projectDir, ".ghs", "ghs.json"))`（即检查文件而非目录），或者把 `fileExists()` 改成基于 `fs.stat().isDirectory()`/`isFile()` 的双形式版本。前者最小化、向后兼容、与 ghs-init 写入的文件集合对齐。
+- **Fix applied**: 把 gate 改成 `await fileExists(resolve(projectDir, ".ghs", "ghs.json"))`（检查文件而非目录），与 ghs-init 实际写入的文件集合对齐。
+- **Result（修复后重跑）**: **PASS**。`ghs-config` 正常返回 3 个写入路径 + 解析的 model ID + 重启提示；`ghs-context-haiku.md` 的 model 字段变成 `openai/gpt-5`，另两个 agent 文件保持不变；`defaults_used: false`。
+- **Test coverage gap**: tool 层 gate 缺集成测试。`test/config.test.ts` 只测了 `config.ts` 的纯函数，没触达 `src/tools/config.ts` 的 gate 分支——Sprint 2 应补一个 tool-layer 集成测试。
 
 ### 场景 4b（控制组）：直接调 `syncAgents()` 验证渲染机制本身
 
@@ -500,7 +501,7 @@ While building the equivalence tests (`test/equivalence/*.test.ts`) two **test-h
 
 ### 已知限制 / Sprint 2+ 后续事项
 
-1. **ghs-config 的 `.ghs/` 目录 gate bug（必须修）**: 见场景 4 根因。修复后建议补一个 tool-layer 集成测试，覆盖「初始化后的项目再调 ghs-config」这条路径——目前 `test/config.test.ts` 只测了 `config.ts` 的纯函数，没有触达 `src/tools/config.ts` 的 gate 分支。
+1. **~~ghs-config 的 `.ghs/` 目录 gate bug~~（已修复）**: 见场景 4 根因 + fix。修复 commit 把 gate 从检查 `.ghs/` 目录改为检查 `.ghs/ghs.json` 文件，场景 4 重跑通过。**遗留**：tool-layer 集成测试仍待补，覆盖「初始化后的项目再调 ghs-config」这条路径——目前 `test/config.test.ts` 只测了 `config.ts` 的纯函数。
 2. **生产 agent 模板仍是 stub**: Phase 3 / Sprint 3 才会交付 `shared/agents/ghs-{context-haiku,plan-designer,plan-reviewer}.md.template` 的生产版本。本验证用 `test/fixtures/agents/*.md.template`（s1-feat-007 创建的 stub）临时顶替。stub 里每个模板只有该角色对应的一个 placeholder，所以场景 3/4 的「另两个 model 保持不变」断言在 stub 上天然成立——生产模板上线后需要重跑本场景，确认三 placeholder 互不串扰。
 3. **未在真实 OpenCode 进程内验证**: 本测试用 Bun 脚本直接调 `tool.execute()`，绕开了 OpenCode 的 plugin loader / system.transform hook 注入。s1-feat-001 的 spike 已经独立验证过 hyphenated tool key 加载 + system.transform marker 注入，所以这部分是有 prior evidence 的；但「在真实 OpenCode 会话里让 AI 主动调用 ghs-init」这条完整路径未走通。建议 Sprint 2 在接入第一个真实 plan/sprint workflow 时顺带做一次 smoke test。
 4. **ghs-sprint / ghs-code / ghs-plan-* 尚未实现**: Sprint 1 只交付了 5 个基础工具（init/status/archive/force-archive/config）。Plan 派发链和工作流循环要等 Sprint 2-4。
@@ -508,7 +509,7 @@ While building the equivalence tests (`test/equivalence/*.test.ts`) two **test-h
 
 ### 结论
 
-Sprint 1 的核心交付物（plugin 加载 + 5 个基础工具 + R3 模型配置链路）整体可用。**唯一阻塞项是 ghs-config 的目录 gate bug**——根因明确（`Bun.file(dir).exists()` 对目录返回 false），修复只需改一行，但属于 s1-feat-010 的运行时回归，必须在 Sprint 2 起步时处理。其余 6/7 个场景全部 PASS，渲染机制在直接调用路径下表现完全符合设计预期。
+Sprint 1 的核心交付物（plugin 加载 + 5 个基础工具 + R3 模型配置链路）整体可用。验证过程中发现的 ghs-config 目录 gate bug 已在同一 commit 内修复并通过 e2e 重跑确认。所有 7 个场景（含修复后的场景 4）全部 PASS，渲染机制在直接调用路径下表现完全符合设计预期。
 
 ---
 
