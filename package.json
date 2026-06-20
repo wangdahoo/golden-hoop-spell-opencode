@@ -1,5 +1,5 @@
 {
-  "name": "golden-hoop-spell-opencode",
+  "name": "@wangdahoo/golden-hoop-spell-opencode",
   "version": "0.1.0",
   "main": "src/index.ts",
   "devDependencies": {
@@ -43,6 +43,9 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:equivalence": "bun test test/equivalence/"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
   },
   "type": "module"
 }
