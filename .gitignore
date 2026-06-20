@@ -222,3 +222,10 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/macos,windows,visualstudiocode,node
 
 .ghs
+
+# The equivalence test suite needs canonical .ghs/ fixtures under version
+# control — they are the input both the TS port and the Python oracle run
+# against. Un-ignore ONLY this test path; everything else under .ghs/ stays
+# ignored (per-user project state).
+!test/fixtures/.ghs/
+!test/fixtures/.ghs/**

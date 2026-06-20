@@ -1,0 +1,66 @@
+{
+  "project": {
+    "name": "Test Fixture Project",
+    "description": "Canonical fixture for status/validate/archive equivalence tests",
+    "tech_stack": ["typescript", "bun"],
+    "created_at": "2026-01-01"
+  },
+  "sprints": [
+    {
+      "id": "s1",
+      "name": "Foundation Sprint",
+      "goal": "Lay the foundation",
+      "status": "completed",
+      "created_at": "2026-01-01",
+      "features": [
+        {
+          "id": "s1-feat-001",
+          "title": "First feature",
+          "description": "First feature of the foundation sprint",
+          "status": "completed",
+          "priority": "high",
+          "category": "infra"
+        },
+        {
+          "id": "s1-feat-002",
+          "title": "Second feature",
+          "description": "Second feature, blocked",
+          "status": "blocked",
+          "blocked_reason": "Waiting on infrastructure",
+          "priority": "medium",
+          "category": "data"
+        }
+      ]
+    },
+    {
+      "id": "s2",
+      "name": "Active Sprint",
+      "goal": "Build the next layer",
+      "status": "in_progress",
+      "created_at": "2026-02-01",
+      "features": [
+        {
+          "id": "s2-feat-001",
+          "title": "Pending feature",
+          "description": "Pending feature with dependency on s2-feat-000",
+          "status": "pending",
+          "priority": "high",
+          "category": "core",
+          "dependencies": ["s2-feat-000"]
+        },
+        {
+          "id": "s2-feat-000",
+          "title": "In-progress feature",
+          "description": "In-progress feature, no deps",
+          "status": "in_progress",
+          "priority": "high",
+          "category": "core"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "version": "1.0.0",
+    "last_updated": "2026-02-15"
+  }
+}

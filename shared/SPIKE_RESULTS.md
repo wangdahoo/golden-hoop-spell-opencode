@@ -398,6 +398,22 @@ Implication: `ghs-config` tool cannot "apply" changes by writing files alone —
 
 ---
 
+## Follow-up: equivalence test harness divergences (s1-feat-012)
+
+While building the equivalence tests (`test/equivalence/*.test.ts`) two **test-harness-only** divergences between Bun's test runner and CPython were found. Neither indicates a real bug in the TS ports; both are worked around in `test/equivalence/_helpers.ts`.
+
+1. **Timezone forcing**: `bun test` runs every test with the JS locale pinned to UTC, regardless of the host system's actual TZ (verified: `Intl.DateTimeFormat().resolvedOptions().timeZone === "UTC"` inside tests, while `bun -e` reports `Asia/Shanghai`). This makes `new Date().getHours()` return UTC hours under test, but local hours in production. The Python oracle (`datetime.now()`) honours the host TZ by default, so the two would diverge by the TZ offset.
+   - **Workaround**: `runPython()` in `_helpers.ts` explicitly sets `TZ=UTC` on the spawned Python's env, so both sides run in UTC inside tests. In production (non-test runtime) both honour the actual process TZ — no fix needed in the TS port itself.
+
+2. **`Bun.mkdtemp` does not exist**: the feature spec referenced `Bun.mkdtemp` as the canonical temp-dir primitive. The installed Bun 1.3.11 exposes no such API.
+   - **Workaround**: `makeTempDir()` in `_helpers.ts` uses Node's `fs.promises.mkdtemp(join(tmpdir(), prefix))` and then `realpathSync()`-resolves the result so the path matches Python's `Path.resolve()` semantics (matters on macOS where `/tmp` and `/var` are symlinks into `/private/...`).
+
+3. **Python `re` vs JS `RegExp` for the H2 splitter**: not encountered as a divergence. Python's `re.split(r"^## ", content, flags=re.MULTILINE)` and JS's `content.split(/^## /m)` produce identical arrays for all fixture inputs exercised by the status/archive tests (verified empirically). No assertion relaxation needed.
+
+4. **Archive dry-run still creates `.ghs/archived/`**: both the Python source and the TS port call `create_archive_structure` before checking `dry_run`. This is faithful port behaviour, not a bug — the equivalence test asserts the directory exists (but is empty) in dry-run mode for both impls.
+
+---
+
 ## Next steps
 
 All 5 architectural assumptions de-risked. Proceed with:

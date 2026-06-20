@@ -9,8 +9,16 @@
     "shared"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:equivalence": "bun test test/equivalence/"
   },
+  "//devSystemDependencies": [
+    "python3 — Required ONLY by the equivalence test suite (test/equivalence/*.test.ts)",
+    "which invokes the source plugin's Python scripts as the equivalence oracle.",
+    "Not a runtime dependency; install via your system package manager (e.g.",
+    "`brew install python`, `apt install python3`). The tests find it on PATH."
+  ],
   "peerDependencies": {
     "@opencode-ai/plugin": "1.4.3"
   },
