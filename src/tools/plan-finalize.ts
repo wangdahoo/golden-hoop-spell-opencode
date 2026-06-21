@@ -5,9 +5,13 @@
 //   1. Resolves the target project dir (explicit `project_dir` arg wins;
 //      otherwise `resolveProjectDir(ctx)` reads the opencode session's
 //      worktree/directory).
-//   2. Derives a slug from the plan content's first meaningful line (the
-//      title / H1), sanitising it to `[a-z0-9-]+` so the file name is
-//      filesystem-safe and matches the source skill's convention.
+//   2. Resolves the plan file name. When the caller passes `plan_id` (the
+//      normal post-dispatcher path), the file is `<plan_id>.md` — the same
+//      single canonical artefact the designer drafted, overwritten in place
+//      with the reviewer-approved text (source skill's one-file-per-loop
+//      convention). When no `plan_id` is supplied (a hand-authored plan), a
+//      slug is derived from the plan content's first meaningful line (the
+//      title / H1), sanitised to `[a-z0-9-]+`.
 //   3. Writes the plan to `<projectDir>/.ghs/plans/<YYYY-MM-DD>-<slug>.md`.
 //      This is the canonical, user-facing artefact — the file `features.json`
 //      sprint entries reference via their `plan_ref` field, and the file
@@ -229,16 +233,21 @@ export const planFinalizeTool = tool({
 
     const now = new Date();
 
-    // (a) Derive the plan identifier + file name. The convention is
-    // `<YYYY-MM-DD>-<slug>.md`, matching the plan_ref field on this very
-    // sprint (`2026-06-20-opencode-port.md`) and the source skill's "File
-    // Conventions" table. The plan_id (used to locate status.json) shares the
-    // same `{date}-{slug}` form, minus the `.md` extension.
+    // (a) Resolve the plan identifier + file name. The plan artefact lives at
+    // `<YYYY-MM-DD>-<slug>.md`, matching the source skill's single-file
+    // convention (ghs-plan/SKILL.md "File Conventions"): the designer writes
+    // its draft to this file and finalize overwrites it in place with the
+    // reviewer-approved text, so there is exactly one canonical plan `.md`
+    // per loop (not two). When the caller passes `plan_id` (the normal
+    // post-dispatcher path), we name the file after it — that id equals
+    // `<date>-<slug>` and corresponds to `status.plan_file`. When no `plan_id`
+    // is supplied (a hand-authored plan that never ran ghs-plan-start), we
+    // derive the slug from the plan content's title.
     const slug = deriveSlug(args.plan_content);
     const datePart = formatLocalDate(now);
     const derivedPlanId = `${datePart}-${slug}`;
     const planId = args.plan_id ?? derivedPlanId;
-    const planFileName = `${derivedPlanId}.md`;
+    const planFileName = `${planId}.md`;
     const planFilePath = join(plansDir(projectDir), planFileName);
 
     // (b) Ensure `.ghs/plans/` exists. `ghs-init` / `ghs-plan-start` usually
