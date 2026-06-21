@@ -3,5 +3,6 @@
     "context": "zhipuai-coding-plan/glm-4.5-air",
     "designer": "zhipuai-coding-plan/glm-4.6",
     "reviewer": "zhipuai-coding-plan/glm-4.6"
-  }
+  },
+  "planner_backend": "ghs-plan-designer"
 }

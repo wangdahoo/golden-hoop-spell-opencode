@@ -63,7 +63,7 @@ const DEFAULT_CONFIG_SRC = join(REPO_ROOT, "shared", "ghs.default.json");
 
 /** The default model IDs copied verbatim from `shared/ghs.default.json`. */
 const DEFAULT_MODELS = {
-  context: "zai-coding-plan/glm-4.5-air",
+  context: "zhipuai-coding-plan/glm-4.5-air",
   designer: "zhipuai-coding-plan/glm-4.6",
   reviewer: "zhipuai-coding-plan/glm-4.6",
 } as const;
@@ -287,6 +287,7 @@ describe("config.ts (s1-feat-013)", () => {
         designer: "des/model-2",
         reviewer: "rev/model-3",
       },
+      planner_backend: "ghs-plan-designer",
     };
     const allThreeBody = [
       "---",
@@ -339,6 +340,7 @@ describe("config.ts (s1-feat-013)", () => {
         designer: "ignored/designer",
         reviewer: "ignored/reviewer",
       },
+      planner_backend: "ghs-plan-designer",
     };
 
     const rendered = await renderAgentTemplate("ghs-plain", config, pluginRoot);
@@ -411,7 +413,7 @@ describe("config.ts (s1-feat-013)", () => {
       designer: "preview/designer-9",
       reviewer: "preview/reviewer-9",
     };
-    const config: GhsConfig = { models: userModels };
+    const config: GhsConfig = { models: userModels, planner_backend: "ghs-plan-designer" };
 
     const preview: Record<string, string> = {};
     for (const name of AGENT_NAMES) {
@@ -429,5 +431,94 @@ describe("config.ts (s1-feat-013)", () => {
     // Nothing was written: `.opencode/` must not exist in the project dir
     // (we never invoked syncAgents or Bun.write).
     expect(existsSync(join(projectDir, ".opencode"))).toBe(false);
+  });
+
+  // (k) ---------------------------------------------------------------------
+  test("(k) loadGhsConfig with missing .ghs/ghs.json defaults planner_backend to 'ghs-plan-designer'", async () => {
+    // No `.ghs/ghs.json` — schema `.default(...)` plus the default file both
+    // point at "ghs-plan-designer". The merged config must surface this as a
+    // required field (zod `.default()` makes the input optional but the
+    // output required).
+    const { config } = await loadGhsConfig(projectDir, pluginRoot);
+
+    expect(config.planner_backend).toBe("ghs-plan-designer");
+  });
+
+  // (l) ---------------------------------------------------------------------
+  test("(l) loadGhsConfig honors user-specified planner_backend='builtin-plan'", async () => {
+    await writeUserConfig(
+      projectDir,
+      JSON.stringify({
+        models: {
+          context: "openai/gpt-5",
+          designer: "openai/gpt-5",
+          reviewer: "openai/gpt-5",
+        },
+        planner_backend: "builtin-plan",
+      }),
+    );
+
+    const { config } = await loadGhsConfig(projectDir, pluginRoot);
+
+    // User value wins; the merged product carries the field verbatim.
+    expect(config.planner_backend).toBe("builtin-plan");
+  });
+
+  // (m) ---------------------------------------------------------------------
+  test("(m) loadGhsConfig with invalid planner_backend enum value is rejected by Zod", async () => {
+    // Valid JSON shape, but planner_backend carries a value outside the enum.
+    // z.enum must surface this as an `invalid_enum_value` issue rather than
+    // silently coercing.
+    await writeUserConfig(
+      projectDir,
+      JSON.stringify({
+        models: {
+          context: "openai/gpt-5",
+          designer: "openai/gpt-5",
+          reviewer: "openai/gpt-5",
+        },
+        planner_backend: "foo",
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await loadGhsConfig(projectDir, pluginRoot);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ZodError);
+    const issues = (caught as ZodError).issues;
+    const enumIssue = issues.find((i) => i.code === "invalid_enum_value");
+    expect(enumIssue).toBeDefined();
+    // The offending value plus the two valid options must be surfaced.
+    expect(enumIssue!.received).toBe("foo");
+    expect(enumIssue!.options).toEqual(["ghs-plan-designer", "builtin-plan"]);
+  });
+
+  // (n) ---------------------------------------------------------------------
+  test("(n) loadGhsConfig with ghs.json omitting planner_backend fills via .default() and keeps defaults_used false when all models are set", async () => {
+    // User fully specifies all three models but omits planner_backend. Zod's
+    // `.default(...)` fills it in, and `plannerBackendFellBack` stays false
+    // (it is unreachable under the current schema — plan §3.2.1). Therefore
+    // `defaults_used` must reflect only the model fallback state (here:
+    // false). This pins the forward-compatibility anchor: planner_backend
+    // going through `.default()` does NOT on its own flip `defaults_used`.
+    await writeUserConfig(
+      projectDir,
+      JSON.stringify({
+        models: {
+          context: "openai/gpt-5",
+          designer: "anthropic/claude-opus-4.1",
+          reviewer: "anthropic/claude-sonnet-4.5",
+        },
+        // planner_backend deliberately omitted
+      }),
+    );
+
+    const { config, defaults_used } = await loadGhsConfig(projectDir, pluginRoot);
+
+    expect(config.planner_backend).toBe("ghs-plan-designer");
+    expect(defaults_used).toBe(false);
   });
 });

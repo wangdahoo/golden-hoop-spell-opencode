@@ -30,6 +30,7 @@ export const GhsConfigSchema = z.strictObject({
     designer: z.string(),
     reviewer: z.string(),
   }),
+  planner_backend: z.enum(["ghs-plan-designer", "builtin-plan"]).default("ghs-plan-designer"),
 });
 
 export type GhsConfig = z.infer<typeof GhsConfigSchema>;
@@ -171,6 +172,7 @@ export async function loadGhsConfig(
   let contextFellBack = false;
   let designerFellBack = false;
   let reviewerFellBack = false;
+  let plannerBackendFellBack = false;
 
   const context =
     userParsed.models.context && userParsed.models.context.length > 0
@@ -185,8 +187,20 @@ export async function loadGhsConfig(
       ? userParsed.models.reviewer
       : ((reviewerFellBack = true), defaultParsed.models.reviewer);
 
-  const merged: GhsConfig = { models: { context, designer, reviewer } };
-  const defaults_used = contextFellBack || designerFellBack || reviewerFellBack;
+  // `planner_backend` merge branch. Under the current schema
+  // (`z.enum([...]).default(...)`) `userParsed.planner_backend` is always a
+  // non-empty enum member, so `plannerBackendFellBack` is always false here.
+  // The branch is retained for type symmetry with the three model fields and
+  // as a forward-compatibility anchor (plan §3.2.1: if the schema ever
+  // widens to `z.string().optional()`, this branch engages without further
+  // changes).
+  const planner_backend =
+    userParsed.planner_backend ??
+    ((plannerBackendFellBack = true), defaultParsed.planner_backend);
+
+  const merged: GhsConfig = { models: { context, designer, reviewer }, planner_backend };
+  const defaults_used =
+    contextFellBack || designerFellBack || reviewerFellBack || plannerBackendFellBack;
 
   return { config: merged, defaults_used };
 }
