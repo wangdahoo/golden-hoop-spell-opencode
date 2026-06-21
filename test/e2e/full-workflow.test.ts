@@ -67,7 +67,7 @@ import {
  * markdown frontmatter.
  */
 const DEFAULT_MODELS = {
-  context: "zai-coding-plan/glm-4.5-air",
+  context: "zhipuai-coding-plan/glm-4.5-air",
   designer: "zhipuai-coding-plan/glm-4.6",
   reviewer: "zhipuai-coding-plan/glm-4.6",
 } as const;
