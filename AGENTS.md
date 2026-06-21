@@ -22,7 +22,7 @@ Python plugin**, invoked as a subprocess. Two hard requirements (see
 
 1. `python3` must be on PATH.
 2. The original Claude Code plugin repo must be checked out at the **hardcoded
-   absolute path** `/Users/tom/github/golden-hoop-spell/plugin` (the
+   absolute path** `$HOME/github/golden-hoop-spell/plugin` (the
    `PYTHON_SCRIPTS_DIR` / `GHS_SOURCE_ROOT` constants).
 
 On any other machine these tests fail/error; this is expected and dev-only. Do
