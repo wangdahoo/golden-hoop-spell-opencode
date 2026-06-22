@@ -57,3 +57,92 @@ export const PLAN_DESIGNER_PROMPT = `接下来请用 Task tool 派发 \`ghs-plan
 输出语言策略（与 CLAUDE.md 一致）：方案正文/章节标题/风险描述用中文；代码标识符、字段名、枚举值、文件路径、日志/错误信息用英文。
 
 收到 subagent 的分隔标记输出后，请把整段（含标记）原样作为 \`plan\` 参数调用 \`ghs-plan-review\` 进入 plan 模式评审。`;
+
+// -----------------------------------------------------------------------------
+// Mechanism 二 §3.2.1 改造点(派发 prompt 选择器) — Feature s1-feat-008
+// -----------------------------------------------------------------------------
+//
+// When `planner_backend === "builtin-plan"`, the main AI dispatches the opencode
+// BUILT-IN `plan` agent (Config.agent.plan, name="plan") instead of the ghs-
+// self-built `ghs-plan-designer` subagent. The built-in agent has NO pre-baked
+// ghs delimiter contract (its system prompt is whatever Config.agent.plan.prompt
+// says or the SDK default), so the contract MUST be embedded in the dispatch
+// prompt itself for `parsePlan` (src/lib/parse.ts) to extract the agent's
+// output. Spike s1-feat-006 verified this is feasible: Task dispatches by agent
+// name string, and the dispatch prompt is arbitrary text the contract can be
+// concatenated into. LLM compliance with the injected contract is an empirical
+// question deferred to manual E2E (plan §5 R3 / D3).
+//
+// Language policy (AGENTS.md): LLM-facing prompts use English — so the BUILTIN
+// prompt below is English, while PLAN_DESIGNER_PROMPT above (predating this
+// policy clarification) stays Chinese and untouched.
+
+/**
+ * Named constants for the two delimiter tokens. PLAN_DESIGNER_PROMPT_BUILTIN
+ * refers to the markers by name (plan §3.2.1: "只用名称指代起始/结束分隔标记,
+ * 不写死字面量") rather than hardcoding the literal inline.
+ *
+ * PLAN_DESIGNER_PROMPT (above) keeps its inline literals unchanged — do NOT
+ * retrofit (byte-equivalence / regression-free).
+ */
+const PLAN_START_MARKER = "<<<PLAN_START>>>";
+const PLAN_END_MARKER = "<<<PLAN_END>>>";
+
+/**
+ * Dispatch instruction for the BUILT-IN `plan` agent.
+ *
+ * Isomorphic to {@link PLAN_DESIGNER_PROMPT} in shape (dispatch → input →
+ * working approach → delimiter contract → completion signal → language policy
+ * → next step) but does NOT duplicate the full body — only the delimiter-
+ * contract segment is shared (referred to by marker name via the constants
+ * above). Surrounding framing is English per the LLM-facing-prompt language
+ * policy.
+ *
+ * Used by `getDesignerPrompt("builtin-plan")`; wired into plan-review.ts by
+ * feat-009.
+ */
+export const PLAN_DESIGNER_PROMPT_BUILTIN = `Next, dispatch the BUILT-IN \`plan\` agent via the Task tool (agent: "plan") to design the technical plan. The agent receives a context snapshot + the requirement and produces an executable technical plan.
+
+Input to feed the agent (concatenate into the Task dispatch prompt):
+- Requirement description (user's original requirement + any clarified constraints)
+- Context snapshot path or full text (produced by the previous ghs-context-haiku run)
+
+Working approach (ensure the agent follows):
+- Read the context snapshot first, then selectively read individual source files only as needed; do not re-read entire files when the snapshot already covers architecture overview / module responsibilities / data model
+- The plan must be consistent with the existing architecture, phased, executable, rollback-safe, and testable
+- If an item cannot be inferred from code/requirement and needs user clarification, output \`QUESTION: <question>\` on the first line
+
+Delimiter contract (HARD requirement — the built-in agent does NOT have this contract pre-baked, so it MUST be honoured from this dispatch prompt; the parser extracts the plan by these tokens):
+- The full plan text MUST be placed between \`${PLAN_START_MARKER}\` and \`${PLAN_END_MARKER}\`, each marker on its own line
+- Do NOT wrap the markers or content in markdown code fences (no triple backticks)
+- Do NOT translate or rewrite the markers; use literal ASCII characters \`<\`, \`>\`, \`_\`
+- Correct example:
+    ${PLAN_START_MARKER}
+    # Plan Title
+    ...body...
+    ${PLAN_END_MARKER}
+    PLAN DESIGN COMPLETE
+
+Completion signal: output \`PLAN DESIGN COMPLETE\` when design is done; output \`QUESTION: <specific question>\` if user clarification is needed (do not use QUESTION as a substitute for your own technical judgement).
+
+Output language policy (consistent with CLAUDE.md): plan body / section headings / risk descriptions in 中文; code identifiers, field names, enum values, file paths, and log/error strings in English.
+
+After receiving the agent's delimited output, pass the entire segment (markers included) verbatim as the \`plan\` argument to \`ghs-plan-review\` to enter plan-mode review.`;
+
+/**
+ * Select the plan-designer dispatch prompt based on the configured backend.
+ *
+ * @param backend - value of `config.planner_backend` from `loadGhsConfig`
+ *                  (z.enum(["ghs-plan-designer", "builtin-plan"])). The literal
+ *                  union is used here (rather than importing the zod type) to
+ *                  keep this prompt module decoupled from config.ts.
+ * @returns `PLAN_DESIGNER_PROMPT` for the default ghs self-built subagent path;
+ *          `PLAN_DESIGNER_PROMPT_BUILTIN` for the opt-in built-in `plan` agent.
+ *
+ * Mechanism 二 §3.2.1 改造点(b): plan-review.ts reads `planner_backend` via
+ * `loadGhsConfig` and passes it here. The default path preserves the existing
+ * byte-equivalence contract (regression-free); the builtin path is pure opt-in.
+ */
+export function getDesignerPrompt(backend: "ghs-plan-designer" | "builtin-plan"): string {
+  return backend === "builtin-plan" ? PLAN_DESIGNER_PROMPT_BUILTIN : PLAN_DESIGNER_PROMPT;
+}
