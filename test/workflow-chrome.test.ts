@@ -8,8 +8,8 @@
 //   - nextActionAnchor(action)           -> ▶ NEXT ACTION handoff
 //   - staleTodoWarning(expectedStage)    -> drift warning
 //
-// There is no Python oracle (workflow-chrome is a net-new TS module, out of
-// equivalence scope per plan §5 R6), so these are pure behavioural tests.
+// workflow-chrome is a net-new TS module, so these are pure behavioural
+// tests.
 // Coverage map:
 //   - one inline snapshot per function ...... describe("snapshots")
 //   - defensive boundary (no-throw) ......... describe("todoDirective defensive boundary")

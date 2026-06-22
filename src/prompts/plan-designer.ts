@@ -83,7 +83,7 @@ export const PLAN_DESIGNER_PROMPT = `接下来请用 Task tool 派发 \`ghs-plan
  * 不写死字面量") rather than hardcoding the literal inline.
  *
  * PLAN_DESIGNER_PROMPT (above) keeps its inline literals unchanged — do NOT
- * retrofit (byte-equivalence / regression-free).
+ * retrofit (regression-free).
  */
 const PLAN_START_MARKER = "<<<PLAN_START>>>";
 const PLAN_END_MARKER = "<<<PLAN_END>>>";
@@ -141,7 +141,7 @@ After receiving the agent's delimited output, pass the entire segment (markers i
  *
  * Mechanism 二 §3.2.1 改造点(b): plan-review.ts reads `planner_backend` via
  * `loadGhsConfig` and passes it here. The default path preserves the existing
- * byte-equivalence contract (regression-free); the builtin path is pure opt-in.
+ * output unchanged (regression-free); the builtin path is pure opt-in.
  */
 export function getDesignerPrompt(backend: "ghs-plan-designer" | "builtin-plan"): string {
   return backend === "builtin-plan" ? PLAN_DESIGNER_PROMPT_BUILTIN : PLAN_DESIGNER_PROMPT;

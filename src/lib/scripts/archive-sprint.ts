@@ -387,7 +387,7 @@ export async function archiveSprints(
 }
 
 // ---------------------------------------------------------------------------
-// CLI-friendly formatters. The Python script prints a lot of human-facing
+// CLI-friendly formatters. The original script prints a lot of human-facing
 // status lines; the tool layer (s1-feat-009) renders them via these helpers
 // to keep byte-identical stdout.
 
@@ -410,7 +410,7 @@ export function formatArchivingSprint(sprint: Sprint): string {
 }
 
 /**
- * Render the full archive report — byte-identical to what Python's `main()`
+ * Render the full archive report — byte-identical to what `main()`
  * prints to stdout for a given set of inputs.
  *
  * This is a pure function over structured inputs; it does NOT touch the

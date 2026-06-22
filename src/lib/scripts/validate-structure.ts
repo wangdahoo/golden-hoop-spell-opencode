@@ -248,7 +248,7 @@ export async function validateProjectStructure(
 }
 
 /**
- * Render a validation report as the Python `main()` would print to stdout.
+ * Render a validation report as `main()` would print to stdout.
  *
  * This is exported so the CLI wrapper in s1-feat-009 can produce byte-identical
  * output without re-implementing the format. The text matches:

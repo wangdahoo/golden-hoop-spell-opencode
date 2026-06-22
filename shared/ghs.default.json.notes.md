@@ -13,9 +13,8 @@
 ## 与源插件 / 规划文档的差异
 
 - **原 Claude Code 插件**（`/Users/tom/github/golden-hoop-spell/plugin/`）默认使用 Anthropic 模型 ID（`anthropic/claude-haiku-4-20250514` + `anthropic/claude-sonnet-4-20250514` x2）。
-- **技术规划文档**（`docs/plan/2026-06-20-opencode-port.md`）同样沿用 Anthropic 假设。
 - **本地实际环境**（用户配置）：使用智谱 / Z.AI 的 GLM 系列模型，未配置 Anthropic。
-- **Phase 0 spike 结论**（见 `shared/SPIKE_RESULTS.md`）：派发/模板替换/权限限制等机制均与模型无关（model-agnostic），仅是 provider/model ID 字符串不同。因此本仓库的默认值直接使用 GLM 系列，方便用户开箱即用。
+- **Phase 0 spike 结论**：派发/模板替换/权限限制等机制均与模型无关（model-agnostic），仅是 provider/model ID 字符串不同。因此本仓库的默认值直接使用 GLM 系列，方便用户开箱即用。
 
 ## 用户自定义方式
 

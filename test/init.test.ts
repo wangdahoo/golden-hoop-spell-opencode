@@ -8,7 +8,7 @@
 // Temp-dir policy: mirrors `test/config.test.ts` — Bun 1.3.11 has no
 // `Bun.mkdtemp`, so we use `fs.mkdtemp` under `os.tmpdir()` and
 // `realpathSync` the result to avoid macOS `/tmp` → `/private/tmp` symlink
-// surprises (matches the equivalence suite convention).
+// surprises.
 
 import { expect, test, describe, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";

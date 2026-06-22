@@ -32,10 +32,10 @@
 //         signal phrases) the escaped forms are identical. We use a small
 //         `escapeRegex` helper that escapes every char JS treats as special.
 //   - JSON output: the Python CLI serialises with `json.dumps(result,
-//     ensure_ascii=False, indent=2)`. The equivalence test compares the
-//     *parsed* result object (not the serialised string), so we return a plain
-//     object; a `serializeResult()` helper is provided for callers that need
-//     the exact byte stream (uses `JSON.stringify(..., null, 2)`).
+//     ensure_ascii=False, indent=2)`. Callers consume the *parsed* result
+//     object (not the serialised string), so we return a plain object; a
+//     `serializeResult()` helper is provided for callers that need the exact
+//     byte stream (uses `JSON.stringify(..., null, 2)`).
 //   - Style follows s1-feat-008: no `process.exit`, no `console.log`,
 //     functions are pure (no FS / subprocess side effects).
 
@@ -620,12 +620,11 @@ export function parseDelimitedOutput(
 }
 
 /**
- * Serialise a {@link ParseResult} to the exact JSON byte stream the Python
- * CLI emits (`json.dumps(result, ensure_ascii=False, indent=2)`).
+ * Serialise a {@link ParseResult} to canonical JSON
+ * (`JSON.stringify(result, null, 2)`).
  *
- * Provided for callers that need byte-level equivalence with the source
- * script's stdout (e.g. the equivalence test suite). Runtime tool callers
- * consume the {@link ParseResult} object directly.
+ * Provided for callers that need the canonical textual form. Runtime tool
+ * callers consume the {@link ParseResult} object directly.
  */
 export function serializeResult(result: ParseResult): string {
   return JSON.stringify(result, null, 2);

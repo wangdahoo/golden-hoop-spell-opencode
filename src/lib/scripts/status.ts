@@ -4,10 +4,10 @@
 //   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/status.py
 //
 // Faithful port notes:
-//   - The Python script prints the formatted status to stdout. Here we
+//   - The original script prints the formatted status to stdout. Here we
 //     return the same text via `formatStatus()` so the tool layer can render
-//     or post-process it. The text is byte-for-byte identical to what Python
-//     would have printed (verified by walking through each `print()` call).
+//     or post-process it. The text is byte-for-byte stable (verified by
+//     walking through each `print()` call).
 //   - The H2-section splitter mirrors Python's `re.split(r"^## ", content,
 //     flags=re.MULTILINE)`: in JS we use `/^## /m` and keep only sections
 //     whose first line contains a `\d{4}-\d{2}-\d{2}` date.
@@ -111,9 +111,9 @@ export interface StatusResult {
 /**
  * Format the project status as a text block.
  *
- * The returned string is byte-identical to Python `main()`'s stdout, including
- * the trailing blank lines. Mirrors the early-return when features.json is
- * missing (text = `❌ features.json not found. Run init-project.py first.\n`).
+ * The returned string is byte-for-byte stable, including the trailing blank
+ * lines. Mirrors the early-return when features.json is missing (text =
+ * `❌ features.json not found. Run init-project.py first.\n`).
  */
 export async function formatStatus(options: StatusOptions = {}): Promise<string> {
   const projectDir = pyResolve(options.projectDir ?? process.cwd());

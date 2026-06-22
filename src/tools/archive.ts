@@ -13,9 +13,8 @@
 // across calls on disk (simpler than threading per-invocation state through
 // the tool protocol — see the feature's technical_notes).
 //
-// Output text mirrors the Python `archive_sprint.py` script byte-for-byte
-// (verified by `test/equivalence/archive.test.ts`); we append a short
-// nonce section to the dry-run output when one is issued.
+// Output text mirrors the original `archive_sprint.py` script byte-for-byte;
+// we append a short nonce section to the dry-run output when one is issued.
 
 import { tool } from "@opencode-ai/plugin";
 import type { ToolContext } from "@opencode-ai/plugin/tool";

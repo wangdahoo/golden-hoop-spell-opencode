@@ -1,7 +1,7 @@
 {
   "project": {
     "name": "Test Fixture Project",
-    "description": "Canonical fixture for status/validate/archive equivalence tests",
+    "description": "Canonical fixture for status/validate/archive tests",
     "tech_stack": ["typescript", "bun"],
     "created_at": "2026-01-01"
   },

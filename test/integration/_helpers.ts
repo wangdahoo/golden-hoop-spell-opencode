@@ -6,11 +6,10 @@
 // creation, mock ToolContext construction, delimited-output blob fixtures —
 // lives here.
 //
-// Temp-dir policy matches test/equivalence/_helpers.ts + test/config.test.ts:
-// Bun 1.3.11 has no `Bun.mkdtemp`, so we lean on Node's `fs.mkdtemp` under
-// `os.tmpdir()` and `realpathSync` the result (dodges the macOS `/tmp` →
-// `/private/tmp` symlink surprise that would otherwise byte-compare-mismatch
-// against Python oracles and confuse path assertions).
+// Temp-dir policy matches test/config.test.ts: Bun 1.3.11 has no
+// `Bun.mkdtemp`, so we lean on Node's `fs.mkdtemp` under `os.tmpdir()` and
+// `realpathSync` the result (dodges the macOS `/tmp` → `/private/tmp` symlink
+// surprise that would otherwise confuse path assertions).
 
 import { mkdtemp } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -23,7 +22,7 @@ export const REPO_ROOT = join(import.meta.dir, "..", "..");
 /**
  * Create a fresh temp directory under the OS temp dir. Returns the absolute
  * path with symlinks resolved (matches Python's `Path.resolve()` + Node's
- * `realpathSync` convention used throughout the equivalence suite).
+ * `realpathSync` convention).
  */
 export async function makeTempDir(prefix = "ghs-int-"): Promise<string> {
   const raw = await mkdtemp(join(tmpdir(), prefix));

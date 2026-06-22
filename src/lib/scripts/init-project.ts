@@ -8,7 +8,7 @@
 //     `json.dump(obj, f, indent=2)` (both use 2-space indent, comma-newline,
 //     colon-space). Python's `ensure_ascii=True` default would escape non-ASCII
 //     as \uXXXX — but the source features.json template is pure ASCII, so the
-//     byte-for-byte equivalence holds for the generated files in practice.
+//     generated files are byte-for-byte stable in practice.
 //   - Date format: Python uses `datetime.now().strftime("%Y-%m-%d")` which is
 //     a naive local date. We mirror this via `formatLocalDate()`.
 //   - This module exports functions — NO console.log to stdout, NO process.exit.
@@ -219,9 +219,8 @@ export async function createProgressMd(
  * builds that strip the asset. Returns the destination path when a copy
  * happened, or `null` when the source was absent (no throw).
  *
- * NOTE: this intentionally does NOT mirror any Python oracle step, so it is
- * excluded from the equivalence comparison (which only inspects features.json,
- * progress.md, .gitignore — see test/equivalence/init.test.ts).
+ * NOTE: this is a net-new step with no counterpart in the source plugin — it
+ * only runs when the `shared/skill/ghs/SKILL.md` asset is present.
  */
 export async function copySkillMd(
   outputDir: string,

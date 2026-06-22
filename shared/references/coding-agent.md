@@ -15,10 +15,7 @@
 **Always perform in order:**
 
 1. **Confirm Location**
-   ```bash
-   command python3 ${CLAUDE_PLUGIN_ROOT}/shared/scripts/resolve_project_dir.py
-   ```
-   Store the output as the absolute project directory. Use it for all reads/writes of `.ghs/features.json` and `.ghs/progress.md`.
+   The project directory is established by the orchestrator when dispatching this subagent — use it for all reads/writes of `.ghs/features.json` and `.ghs/progress.md`.
 
 2. **Review Recent Work**
    ```bash
@@ -117,10 +114,7 @@ When invoked with `--parallel`, the Coding Agent switches to parallel orchestrat
 Perform these checks in order before starting orchestration:
 
 1. **Confirm Location**
-   ```bash
-   command python3 ${CLAUDE_PLUGIN_ROOT}/shared/scripts/resolve_project_dir.py
-   ```
-   Store the output as the absolute project directory.
+   The project directory is established by the orchestrator when dispatching this subagent.
 
 2. **Check for Uncompleted Sprint**
    Read `.ghs/features.json` and look for a sprint with status `in_progress` or `planning` that has features with status `pending` or `blocked`.
@@ -145,37 +139,13 @@ Perform these checks in order before starting orchestration:
 
 #### Step 1: Identify Ready Features and Build Batches
 
-Use `parallel_utils.py` to identify ready features and build conflict-free parallel batches. This script reads `.ghs/features.json`, detects dependency cycles, identifies features whose dependencies are all completed, and groups them into batches that respect file-level conflicts:
+When dispatched with `parallel=true`, the `ghs-code` tool computes conflict-free parallel batches internally (via `src/lib/scripts/parallel-utils.ts`). It reads `.ghs/features.json`, detects dependency cycles, identifies features whose dependencies are all completed, and groups them into batches that respect file-level conflicts, then returns the batch plan as structured text for the orchestrator to dispatch.
 
-```bash
-command python3 ${CLAUDE_PLUGIN_ROOT}/shared/scripts/parallel_utils.py \
-  --project-dir "<PROJECT_DIR>" \
-  --max-parallel 5 \
-  --sprint-id "<SPRING_ID>"
-```
-
-Output is JSON with the following structure:
-
-```json
-{
-  "ready_features": [ /* features with all deps completed */ ],
-  "batches": [
-    [ /* batch 1: features with no file overlap */ ],
-    [ /* batch 2: features with no file overlap, but conflict with batch 1 */ ]
-  ],
-  "skipped": [ /* features not ready (deps unmet, wrong status, or in cycles) */ ],
-  "cycles": [ /* detected circular dependency chains */ ],
-  "cycle_feature_ids": [ /* feature IDs involved in any cycle */ ]
-}
-```
-
-Each feature in the output includes: `id`, `title`, `status`, `files_affected`, and `dependencies`.
-
-Key batching rules (enforced by `parallel_utils.py`):
+The batching logic enforces these rules:
 - Only `pending` features with all dependencies `completed` are considered ready
 - Features involved in dependency cycles are skipped
 - Features with overlapping `files_affected` are never placed in the same batch
-- Maximum of 5 features per batch (configurable via `--max-parallel`)
+- Maximum of 5 features per batch
 
 #### Step 3: Output Execution Plan
 
@@ -223,7 +193,7 @@ This is an isolated task. Disregard prior context, assume nothing, read files fr
 - End with EXACTLY ONE signal: `FEATURE COMPLETE: <feature_id>` or `FEATURE BLOCKED: <feature_id> - <reason>`.
 ```
 
-The orchestrator MUST substitute `<PROJECT_DIR>` (from `resolve_project_dir.py`) and `<feature_id>` (from the batch feature list) into the prompt before spawning. The prompt contains NO inline feature details — the subagent reads them from `.ghs/features.json` per Task step 1. Note: the prompt does NOT contain a `<sprint_id>` placeholder — the subagent locates its feature by `id == "<feature_id>"` across `sprints[].features[]`, so the orchestrator does not need to pass `sprint_id`.
+The orchestrator MUST substitute `<PROJECT_DIR>` (the project directory it resolved) and `<feature_id>` (from the batch feature list) into the prompt before spawning. The prompt contains NO inline feature details — the subagent reads them from `.ghs/features.json` per Task step 1. Note: the prompt does NOT contain a `<sprint_id>` placeholder — the subagent locates its feature by `id == "<feature_id>"` across `sprints[].features[]`, so the orchestrator does not need to pass `sprint_id`.
 
 Use the Agent tool to spawn subagents:
 
@@ -252,16 +222,9 @@ For each background subagent that returns:
    ```
    `attempt<N>` starts at 1 for the first try within a feature; retries increment N.
 
-2. **Invoke the parser helper.**
+2. **Parse the completion signal.**
 
-   > **You MUST copy this command verbatim, only replacing the `<placeholders>`. Do NOT grep the subagent output yourself — the helper is the single source of truth for completion-signal extraction.**
-
-   ```bash
-   command python3 ${CLAUDE_PLUGIN_ROOT}/shared/scripts/parse_completion_signal.py \
-     --feature-id <feature_id> \
-     --input-file <PROJECT_DIR>/.ghs/parallel/<sprint_id>/<feature_id>.raw.attempt<N> \
-     --min-length 50
-   ```
+   The orchestrator parses the subagent's completion signal via the `parse-completion-signal` logic (`src/lib/scripts/parse-completion-signal.ts`) — the single source of truth for completion-signal extraction. Do not grep the subagent output yourself.
 
 3. **Branch on `status` (read from JSON, do not re-parse the text):**
    - **`completed`**:

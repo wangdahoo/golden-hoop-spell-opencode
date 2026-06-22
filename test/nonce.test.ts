@@ -4,9 +4,9 @@
 //   - generateNonce()           -> random 8-char alphanumeric string
 //   - verifyTranscribeNonce()   -> case-insensitive, whitespace-trimmed compare
 //
-// There is no Python oracle to diff against (the source Claude Code plugin
-// gates archive behind a transcription prompt; we port the gate to TS), so
-// these are pure behavioural tests. Coverage map (acceptance_criteria #1):
+// nonce.ts is a net-new TS module (the source Claude Code plugin gates
+// archive behind a transcription prompt; we port the gate to TS), so these
+// are pure behavioural tests. Coverage map (acceptance_criteria #1):
 //   - nonce generation .......... describe("generateNonce")
 //   - expected length/format ..... describe("generateNonce - shape")
 //   - repeat-call uniqueness ..... describe("generateNonce - uniqueness")

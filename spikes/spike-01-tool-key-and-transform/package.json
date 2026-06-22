@@ -1,8 +1,0 @@
-{
-  "name": "spike-01-tool-key-and-transform",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@opencode-ai/plugin": "1.4.3"
-  }
-}

@@ -29,10 +29,10 @@
 //         the feature_id, re-compiled per call with the real escaped id —
 //         same mechanism as the Python source.
 //   - JSON output: the Python CLI serialises with `json.dumps(result,
-//     ensure_ascii=False, indent=2)`. The equivalence test compares the
-//     *parsed* result object (not the serialised string), so we return a
-//     plain object; a `serializeResult()` helper is provided for callers
-//     that need the exact byte stream (uses `JSON.stringify(..., null, 2)`).
+//     ensure_ascii=False, indent=2)`. Callers consume the *parsed* result
+//     object (not the serialised string), so we return a plain object; a
+//     `serializeResult()` helper is provided for callers that need the exact
+//     byte stream (uses `JSON.stringify(..., null, 2)`).
 //   - Style follows s1-feat-008: no `process.exit`, no `console.log`,
 //     functions are pure (no FS / subprocess side effects).
 
@@ -433,8 +433,7 @@ function strategyNaturalLanguage(
 /**
  * Parse `rawText` and return the result object.
  *
- * Port of `parse_signal`. The result shape is byte-compatible with the
- * Python CLI's JSON output (compared structurally by the equivalence test):
+ * Port of `parse_signal`. The result shape is:
  *
  * ```json
  * {
@@ -567,12 +566,12 @@ export function parseCompletionSignal(
 // ---------------------------------------------------------------------------
 
 /**
- * Serialize a {@link SignalResult} to the exact byte stream the Python CLI
- * emits (`json.dumps(result, ensure_ascii=False, indent=2)`).
+ * Serialize a {@link SignalResult} to the canonical JSON form
+ * (`JSON.stringify(result, null, 2)`).
  *
- * The equivalence test compares *parsed* objects (not strings) so callers
- * normally don't need this. It's provided for parity with the other ported
- * scripts and for any caller that wants the canonical textual form.
+ * Callers normally consume the *parsed* object directly, so they rarely need
+ * this. It's provided for parity with the other ported scripts and for any
+ * caller that wants the canonical textual form.
  *
  * `JSON.stringify(result, null, 2)` matches `json.dumps(..., indent=2)` for
  * the result shape (no Date / BigInt / undefined fields). Non-ASCII chars

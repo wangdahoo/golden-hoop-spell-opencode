@@ -3,7 +3,6 @@
 [![OpenCode Plugin](https://img.shields.io/badge/OpenCode-Plugin-blue)](https://opencode.ai)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue)](https://www.typescriptlang.org)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-black)](https://bun.sh)
-[![Tests](https://img.shields.io/badge/Tests-286%20passing-brightgreen)](#开发)
 
 > 多角色技术规划编排插件，为 [OpenCode](https://opencode.ai) 设计。本插件是 Claude Code
 > 插件 [`golden-hoop-spell`](https://github.com/anthropics/golden-hoop-spell)（参考来源）的
@@ -20,12 +19,10 @@
 - [工作流总览](#工作流总览)
 - [工具一览](#工具一览)
 - [三角色计划调度器](#三角色计划调度器)
-- [三大增强机制（s1 sprint）](#三大增强机制s1-sprint)
 - [配置](#配置)
 - [codegraph MCP（可选）](#codegraph-mcp可选)
 - [架构](#架构)
 - [开发](#开发)
-- [许可证](#许可证)
 
 ---
 
@@ -55,8 +52,8 @@
 - **用户可配置模型** — `.ghs/ghs.json` 按角色指定 context / designer / reviewer 三个模型 ID，
   `ghs-config` 渲染对应 Markdown agent 文件，重启后生效。
 - **codegraph MCP 感知** — 检测到 `.codegraph/` 时走 MCP 工具提取架构快照，否则自动回退 grep 路径。
-- **字节级等价** — `src/lib/scripts/` 下的每个移植文件都与源 Python 脚本保持字节级等价
-  （由 equivalence 测试套件以 Python 子进程为 oracle 强制校验）。
+- **忠实移植** — `src/lib/scripts/` 下的每个文件均源自 Python 原版的忠实移植，
+  行为由完整测试套件覆盖。
 - **纯 TypeScript / 零构建** — 无编译步骤，无 Python 运行时依赖，OpenCode 直接加载 `src/index.ts`。
 
 ---
@@ -219,35 +216,6 @@ ghs-plan-finalize(plan_content=<定稿计划>)
 
 ---
 
-## 三大增强机制（s1 sprint）
-
-s1 sprint（`workflow-planagent-skill`）引入了三个正交的增强机制，可独立落地 / 独立回滚：
-
-### 机制一：Todo-Anchored Workflow（断线检测 + 进度可视化）
-
-- **注入点**：系统提示注入「Todo Discipline」段 + `event` hook 监听 `todo.updated` 事件，
-  工具返回文本 prepend stage header / append TODO 指令 / `▶ NEXT ACTION` 锚点。
-- **断线检测**：基于磁盘 `status.json` 的阶段字段（非 wall-clock）判定，返回四种状态——
-  `inactive`（不参与）/ `never`（面板未初始化→发建设性指令）/ `drift`（阶段已推进但面板未刷新→发漂移警告）/ `fresh`（正常）。
-- **工具卡片标注**：主路径 `ctx.metadata({ title: "[ghs] <stage>" })` + 兜底 `tool.execute.after` hook。
-- **定性**：best-effort nudge，右侧 TODO 面板唯一驱动是内置 `todowrite` 工具。
-
-### 机制二：内置 plan agent opt-in
-
-- 在 `.ghs/ghs.json` 中设 `"planner_backend": "builtin-plan"` 可改用 OpenCode 内置 `Config.agent.plan`，
-  默认仍走自建 `ghs-plan-designer`（不破坏字节级等价契约）。
-- 非法值（非 `ghs-plan-designer` / `builtin-plan`）由 Zod strict schema 上抛报错。
-- 降级预案：内置 agent 输出不带分隔标记 → `parsePlan` 重试 → 可切回默认 backend。
-
-### 机制三：Skill 封装
-
-- `shared/skill/ghs/SKILL.md` 封装了完整编排规范（工作流纪律、断线恢复、reading list）。
-- `ghs-init` 将其复制到 `.opencode/skill/ghs/SKILL.md`，OpenCode 启动时加载到系统提示的 `available_skills` 列表。
-- 系统提示瘦身为指向 skill 的指针，但**保留** Todo Discipline + 工具列表（机制一依赖）。
-- **注意**：agent markdown / skill 仅启动加载，无热重载——新增或修改后需重启 OpenCode。
-
----
-
 ## 配置
 
 ### `.ghs/ghs.json`
@@ -270,6 +238,10 @@ s1 sprint（`workflow-planagent-skill`）引入了三个正交的增强机制，
 - `.ghs/ghs.json` 不存在 → 三个模型字段全部来自 `shared/ghs.default.json`。
 - 存在但缺某个字段 / 值为空字符串 → 该字段回退默认值。
 - 未知顶层字段 → Zod `.strict()` 拒绝并报错（如把 `"models"` 拼成 `"model"`）。
+
+`planner_backend` 决定计划设计阶段走哪条路径：默认 `ghs-plan-designer`（自建三角色调度）；
+设为 `builtin-plan` 则改用 OpenCode 内置 `Config.agent.plan`。非法值由 Zod strict schema 上抛报错；
+内置 agent 输出不带 ghs 分隔标记时，解析失败会重试，最坏情况可切回默认 backend。
 
 **修改模型后的生效步骤**：
 
@@ -303,7 +275,7 @@ src/
 │   ├── init.ts  config.ts  plan-start.ts  plan-review.ts  plan-finalize.ts
 │   ├── sprint.ts  code.ts  status.ts  archive.ts  force-archive.ts
 ├── lib/
-│   ├── scripts/          # Python 脚本的 TS 移植（行为真相来源，保持字节级等价）
+│   ├── scripts/          # Python 脚本的 TS 移植（行为真相来源）
 │   ├── config.ts         # 加载/合并 ghs.json + 渲染 agent 模板
 │   ├── codegraph.ts      # codegraph 可用性探测
 │   ├── commands.ts       # slash command 定义
@@ -349,40 +321,12 @@ shared/                   # 随包发布的资产（npm pack 包含）
 # 类型检查
 bun run typecheck          # tsc --noEmit（tsconfig.json 设 noEmit）
 
-# 全量测试（286 tests）
+# 全量测试
 bun test
-
-# 仅跑等价性测试（需 Python oracle，见下方注意）
-bun run test:equivalence   # bun test test/equivalence/
-
-# 跑非等价性子集（任何机器均可）
-bun test test/integration test/e2e test/codegraph.test.ts
 ```
-
-### ⚠️ 等价性测试套件是机器相关的
-
-`test/equivalence/*.test.ts` 以**源 Python 插件**（子进程调用）为 oracle，断言字节级一致输出。
-两个硬性前提（见 `test/equivalence/_helpers.ts`）：
-
-1. `python3` 在 PATH 上。
-2. 源 Claude Code 插件仓库须 checkout 到**硬编码绝对路径** `$HOME/github/golden-hoop-spell/plugin`。
-
-在其他机器上这些测试会失败 / 报错——这是预期行为，仅用于开发期回归。请勿「修复」该硬编码路径
-（它是有意的 oracle）。无法跑 oracle 时，跑非等价性子集即可。
 
 ### 项目布局（不随包发布）
 
-- `spikes/` — 一次性验证实验，排除在 `tsconfig.json` 和 `package.json files` 之外，不要从 `src/` 导入。
-- `test/`、`docs/`、`.ghs/`、`bun.lock`、`tsconfig.json` — 排除在 tarball 之外。
-- `E2E_CHECKLIST.md` — 手动验证清单（部分项需要真实 OpenCode 会话 + 真实 LLM，无法自动化）。
-
-### npm pack 产物
-
-`package.json` 的 `files` 白名单为 `["src", "shared"]`，tarball 共 55 个文件，**不含任何 `.py` 文件**
-（`//packVerified` 标记记录了验证详情）。入口 `main → src/index.ts → default-export ghsPlugin`。
-
----
-
-## 许可证
-
-详见 [LICENSE](LICENSE)（如适用）。
+`test/`、`.ghs/`、`bun.lock`、`tsconfig.json` — 排除在 tarball 之外。
+`package.json` 的 `files` 白名单为 `["src", "shared"]`，发布产物不含任何 `.py` 文件
+（`//packVerified` 标记记录了完整的发布清单与文件计数）。入口 `main → src/index.ts → default-export ghsPlugin`。

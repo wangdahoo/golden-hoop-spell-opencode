@@ -14,11 +14,9 @@
 //       we exercise renderAgentTemplate for all 3 names and verify outputs
 //       without invoking Bun.write, per the feature's documented fallback)
 //
-// Temp-dir policy: Bun 1.3.11 does NOT expose `Bun.mkdtemp` (verified in
-// s1-feat-012's `test/equivalence/_helpers.ts`). We use Node's
+// Temp-dir policy: Bun 1.3.11 does NOT expose `Bun.mkdtemp`. We use Node's
 // `fs.promises.mkdtemp` under `os.tmpdir()` and `realpathSync` the result
-// (matches the equivalence suite's convention and avoids macOS `/tmp` →
-// `/private/tmp` symlink surprises).
+// (avoids macOS `/tmp` → `/private/tmp` symlink surprises).
 //
 // Fixture wiring: `config.ts` reads templates from
 // `<pluginRoot>/shared/agents/<name>.md.template` and defaults from
@@ -103,8 +101,8 @@ const NATIVE_MODEL_KEY: Record<string, keyof GhsConfig["models"]> = {
 // -----------------------------------------------------------------------------
 
 /**
- * Create a fresh temp directory. Mirrors the equivalence test helper — Bun
- * 1.3.11 has no `Bun.mkdtemp`, so we lean on `fs.mkdtemp` + `realpathSync`.
+ * Create a fresh temp directory. Bun 1.3.11 has no `Bun.mkdtemp`, so we lean
+ * on `fs.mkdtemp` + `realpathSync`.
  */
 async function makeTempDir(prefix: string): Promise<string> {
   const raw = await mkdtemp(join(tmpdir(), prefix));

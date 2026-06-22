@@ -4,9 +4,8 @@
 // the project dir (explicit arg wins; otherwise `resolveProjectDir(ctx)`),
 // invokes the formatter, and returns the formatted text for the AI to read.
 //
-// The returned string is byte-identical to what the Python `status.py`
-// script would have printed to stdout (verified by the equivalence tests
-// in `test/equivalence/status.test.ts`).
+// The returned string is byte-for-byte stable, matching the original
+// `status.py` script's stdout format.
 
 import { tool } from "@opencode-ai/plugin";
 import type { ToolContext } from "@opencode-ai/plugin/tool";

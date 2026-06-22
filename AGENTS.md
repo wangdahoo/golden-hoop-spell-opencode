@@ -6,28 +6,10 @@ OpenCode as a plugin (no build step, no Python runtime dep).
 
 ## Commands
 
-- `bun test` — full suite (286 tests). **See the equivalence caveat below.**
-- `bun test test/equivalence/` — only the Python-oracle equivalence tests.
+- `bun test` — full suite.
 - `bun run typecheck` (`tsc --noEmit`) — typecheck; `tsconfig.json` sets `noEmit`.
-- To run everything *except* the machine-specific equivalence suite: run the
-  other test dirs explicitly, e.g. `bun test test/integration test/e2e test/codegraph.test.ts`.
 - There is **no lint / format / biome / eslint config** and **no CI** — do not
   invent `npm run lint`. Verification = `bun run typecheck && bun test`.
-
-## Critical gotcha: the equivalence suite is machine-specific
-
-`test/equivalence/*.test.ts` assert byte-identical output against the **source
-Python plugin**, invoked as a subprocess. Two hard requirements (see
-`test/equivalence/_helpers.ts`):
-
-1. `python3` must be on PATH.
-2. The original Claude Code plugin repo must be checked out at the **hardcoded
-   absolute path** `$HOME/github/golden-hoop-spell/plugin` (the
-   `PYTHON_SCRIPTS_DIR` / `GHS_SOURCE_ROOT` constants).
-
-On any other machine these tests fail/error; this is expected and dev-only. Do
-not "fix" the hardcoded path by relativising it — it is the intentional oracle.
-If you can't run the oracle, run the non-equivalence subset instead.
 
 ## Architecture
 
@@ -38,8 +20,7 @@ If you can't run the oracle, run the non-equivalence subset instead.
 - `src/lib/scripts/*.ts` — TypeScript ports of the source plugin's Python
   scripts (`init_project.py` → `init-project.ts`, etc.). These are the
   behavior source-of-truth; each file names its Python counterpart in a header
-  comment. Keep ports byte-equivalent to the Python original (the equivalence
-  suite enforces this).
+  comment.
 - `src/prompts/*.ts` — LLM prompt templates (English — see language policy).
 - `shared/` — shipped assets (agent `*.md.template` ×3, `ghs.default.json`,
   references). **Included in `npm pack`**; treat as public surface.
@@ -47,8 +28,6 @@ If you can't run the oracle, run the non-equivalence subset instead.
 
 ### Layout that is NOT shipped
 
-- `spikes/` — one-off validation experiments; excluded from `tsconfig.json`
-  and `package.json` `files`. Do not import from `src/`.
 - `test/`, `docs/`, `.ghs/`, `bun.lock`, `tsconfig.json` — excluded from the
   tarball (see `package.json` `//packVerified`).
 - `E2E_CHECKLIST.md` — manual verification checklist; some items cannot be
@@ -72,17 +51,10 @@ If you can't run the oracle, run the non-equivalence subset instead.
   TODO/FIXME, task/plan descriptions. English for code identifiers, log/error
   strings, and LLM-facing prompts. When spawning subagents, include the
   instruction: `使用中文回复和撰写所有文档/commit message。代码标识符、日志、错误信息用英文。`
-- **Commit style**: Conventional Commits with a Chinese description and a
-  `(Feature: sX-feat-YYY)` trailer tying back to the ghs sprint tracker,
-  e.g. `feat(tools): 实现 ghs-code tool —— feature 实现工作流入口 (Feature: s4-feat-004)`.
-- New `src/lib/scripts/*.ts` ports must keep a header comment pointing at the
-  Python behavior source-of-truth path, and stay byte-equivalent (add/extend
-  the matching `test/equivalence/*.test.ts`).
 
 ## ghs 增强:三机制(s1 sprint `workflow-planagent-skill`)
 
-> 行为对照来源:`docs/ghs/plans/2026-06-22-ghs-plan-agent-skill-v41.md`(方案 v4.1 定稿)。
-> 三机制正交,可独立落地 / 独立回滚。本节为面向 agent 的工作概览;精确语义以方案 §3 + 各 `src/` 实现为准。
+> 三机制正交,可独立落地 / 独立回滚。本节为面向 agent 的工作概览;精确语义以各 `src/` 实现为准。
 
 ### 机制一 Todo-Anchored Workflow(best-effort nudge,非程序级强制)
 
@@ -96,7 +68,7 @@ If you can't run the oracle, run the non-equivalence subset instead.
 
 ### 机制二 内置 plan agent opt-in
 
-解决「未复用 opencode 内置 `Config.agent.plan`」。默认仍走 ghs 自建 dispatcher,不破坏字节级等价契约。
+解决「未复用 opencode 内置 `Config.agent.plan`」。默认仍走 ghs 自建 dispatcher(不改变既有移植行为)。
 
 - **配置(`.ghs/ghs.json` + `shared/ghs.default.json`)**:`GhsConfigSchema` 加 `planner_backend: z.enum(["ghs-plan-designer", "builtin-plan"]).default("ghs-plan-designer")`。合法值 `ghs-plan-designer`(默认)/ `builtin-plan`;非法值 ZodError 上抛(由 `ghs-config` strict 报错 surfaced)。
 - **合并逻辑(`src/lib/config.ts` `loadGhsConfig`)**:新增 `plannerBackendFellBack` 分支,并入现有 `*FellBack` 模式;`merged` 含 `planner_backend` 字段;`defaults_used` 累加。当前 schema 下 `.default()`+enum 使 `plannerBackendFellBack` 恒 `false`(保留为类型对称 + 前向兼容锚点)。老项目 ghs.json 缺该字段 → `.default(...)` 填默认,无须迁移。
@@ -118,5 +90,5 @@ If you can't run the oracle, run the non-equivalence subset instead.
 ### 验证命令(不变)
 
 - `bun run typecheck`(`tsc --noEmit`)。
-- `bun test`(非 equivalence 子集):见本文档「## Commands」与「## Critical gotcha: the equivalence suite is machine-specific」。三机制均不动 `src/lib/scripts/*` 移植输出,不在 equivalence 对照范围(对应 R6)。
+- `bun test`:见本文档「## Commands」。三机制均不动 `src/lib/scripts/*` 移植输出(对应 R6)。
 - 手动 E2E 项见 `E2E_CHECKLIST.md`。

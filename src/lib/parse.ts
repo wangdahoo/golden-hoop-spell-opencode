@@ -10,10 +10,8 @@
 // signal / min-length contract a single source of truth.
 //
 // This file deliberately adds NO new parsing logic — every behaviour path
-// delegates to the ported parser, preserving the equivalence guarantee
-// established by `test/equivalence/parse-delimited-output.test.ts`. Style
-// follows s2-feat-001: pure re-exports + thin wrappers, no I/O, no
-// `process.exit`, no `console.log`.
+// delegates to the ported parser. Style follows s2-feat-001: pure re-exports
+// + thin wrappers, no I/O, no `process.exit`, no `console.log`.
 
 import {
   parseDelimitedOutput,

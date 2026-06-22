@@ -133,9 +133,8 @@ export function statusFilePath(projectDir: string, planId: string): string {
  * indistinguishable from one the source plugin would have produced.
  *
  * We deliberately avoid `new Date().toISOString()` — that emits UTC with
- * millis and a `Z` suffix, which would break byte-parity with any future
- * equivalence harness and reads as a different timezone to users diffing
- * `status.json`.
+ * millis and a `Z` suffix, which reads as a different timezone to users
+ * diffing `status.json` and breaks the local-time format contract.
  */
 export function formatLocalTimestamp(now: Date = new Date()): string {
   const pad = (n: number): string => n.toString().padStart(2, "0");

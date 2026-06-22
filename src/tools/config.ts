@@ -5,7 +5,7 @@
 // This is the R3 (Round 6) user-facing entry point: users edit
 // `.ghs/ghs.json`, invoke `ghs-config`, then restart OpenCode to pick up the
 // new agent definitions. The substitution-then-restart mechanism was
-// validated by Phase 0 spike 004 (see shared/SPIKE_RESULTS.md).
+// validated by Phase 0 spike 004.
 //
 // The tool is a thin wrapper around `syncAgents` / `renderAgentTemplate` /
 // `loadGhsConfig` from `src/lib/config.ts`. Responsibilities unique to the

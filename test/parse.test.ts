@@ -2,8 +2,8 @@
 //
 // Implements Feature s3-feat-005 AC #2 ("exports a wrapper function that
 // delegates to parse-delimited-output.ts"). The wrapper layer itself is
-// intentionally trivial — the heavy parsing logic is covered exhaustively by
-// `test/equivalence/parse-delimited-output.test.ts`. Here we assert:
+// intentionally trivial — the heavy parsing logic lives in the underlying
+// parser. Here we assert:
 //   - each preset (parsePlan / parseReview / parseContextSnapshot) wires the
 //     right `kind`, completion signal, and default min length into the
 //     underlying parser;
