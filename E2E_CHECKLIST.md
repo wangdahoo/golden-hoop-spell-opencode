@@ -94,6 +94,70 @@
 
 ---
 
+## 👤 s1 sprint（workflow-planagent-skill）三机制手动 E2E
+
+> 以下项对应 `docs/ghs/plans/2026-06-22-ghs-plan-agent-skill-v41.md` §4 各 Phase 的 **[手动 E2E]**
+> 验收，以及 progress.md Session 2 两 spike（feat-006 builtin-plan / feat-010 skill-load）遗留的
+> 手动确认项。三机制均属 best-effort nudge / 可视化补充，自动化测试已覆盖判定表四行与门禁，
+> 但「真实 OpenCode 会话 + 真实 LLM」下的面板渲染 / 卡片标注 / skill 加载 / 内置 plan agent
+> 输出遵循度仍需人工手验。
+
+### 8. [机制一] 断线检测 —— never 分支
+- [ ] **步骤**：在真实会话中进入 ghs 多步流程（调 `ghs-plan-start`），**故意不调** `todowrite`
+  （不让右侧面板建 checklist），随后继续调下一个 ghs 工具（如 `ghs-plan-review` snapshot 模式）。
+- [ ] **预期**：下一个 ghs 工具返回文本中含 `todoDirective`（建设性首次/重复 nudge，列出 checklist
+  + 标当前 in_progress），**不含** `staleTodoWarning`（避免倒挂与「预设上一阶段」）。对应判定表第 2 行
+  （`lastTodoMs === undefined`），与 `test/plan-start.test.ts` 首个调用断言一致。
+
+### 9. [机制一] 断线检测 —— drift 分支
+- [ ] **步骤**：在真实会话中先调 `todowrite` 建 plan 阶段 checklist（触发 `todo.updated` 设
+  `lastTodoMs`），跑完 `ghs-plan-start`（设 `lastStageSeenByTool = "plan:designing"` 作 drift 基线），
+  然后 stage 推进到 `reviewing`（经 `ghs-plan-review` plan 模式成功路径 `writePlanStatus`）后，
+  **不刷新** todo（不调 `todowrite` 把 checklist 推进到 reviewing 阶段），观察下一次 ghs 工具返回。
+- [ ] **预期**：返回文本含 `staleTodoWarning` 且期望 stage 为 `plan:reviewing`（漂移提醒：stage 已
+  推进但 todo 未跟随刷新）。对应判定表第 3 行（`lastStageSeenByTool !== currentStage`），与
+  `test/plan-review.test.ts` plan 模式成功路径断言一致（post-advance 读到刚写入的 reviewing）。
+
+### 10. [机制一] 右侧面板 checklist + 工具卡片阶段标注
+- [ ] **步骤**：在真实会话中按 SYSTEM_HINT「Todo Discipline」在 plan 阶段调 `todowrite` 建阶段
+  checklist 并随 stage 推进刷新；同时观察每个 ghs 工具卡片的 title。
+- [ ] **预期**：右侧面板出现 plan 阶段 checklist（唯一驱动是内置 `todowrite`，硬约束 C1）；每个
+  ghs 工具卡片 title 显示 `[ghs] <Phase>`（如 `[ghs] plan:designing`、`[ghs] plan:reviewing`），
+  来自 `ctx.metadata()` 主路径，`tool.execute.after` hook 兜底（带 `ghs-` 前缀门禁）。
+
+### 11. [机制二] planner_backend=builtin-plan 全流程（feat-006 spike 待办）
+- [ ] **步骤**：在真实 OpenCode 会话中设 `Config.agent.plan`（opencode 内置 plan agent，name 为
+  `"plan"`），并在 `.ghs/ghs.json` 的 `models` 旁加 `"planner_backend": "builtin-plan"`；调
+  `ghs-plan-start` → `ghs-plan-review`（snapshot 模式）观察主 AI 是否经 Task tool 派发**内置**
+  plan agent（派发指令含 `PLAN_DESIGNER_PROMPT_BUILTIN` 内嵌的分隔标记契约说明）。
+- [ ] **预期（成功）**：内置 plan agent 输出含 `<<<PLAN_START>>>` / `<<<PLAN_END>>>` 各占独立行
+  （经 dispatch prompt 注入的契约），`parsePlan` 提取成功 → `ghs-plan-review(plan)` 进入 review
+  阶段（writePlanStatus 写 `reviewing`）。
+- [ ] **预期（失败 / D3 兜底）**：若内置 plan agent 输出不带分隔标记，断言 D3 降级生效 —— `parsePlan`
+  empty/malformed 分支返回重试；`planner_backend` 默认 `ghs-plan-designer` 可切回；最坏
+  `builtin-plan` 仅作文档引导（见 `shared/references/plan-designer.md`「可选:复用内置 plan agent」）。
+  LLM 遵循度是本项核心不确定点（对应 R3）。
+
+### 12. [机制二] 非法 planner_backend 值
+- [ ] **步骤**：在 `.ghs/ghs.json` 写入非法值（如 `"planner_backend": "foo"`），调 `ghs-config`。
+- [ ] **预期**：`ghs-config` strict 报错（`GhsConfigSchema` 的 `z.enum(["ghs-plan-designer",
+  "builtin-plan"])` ZodError 上抛），不生成 / 不更新 `.opencode/agents/ghs-*.md`。对应
+  `test/config.test.ts` 非法值 enum 报错断言在真实工具链的 surface。
+
+### 13. [机制三] skill 加载 + /skill-creator eval（feat-010 spike 待办）
+- [ ] **步骤 A（加载）**：跑过 `ghs-init` 后确认 `<projectDir>/.opencode/skill/ghs/SKILL.md` 存在；
+  **重启** OpenCode 会话（agent markdown / skill 仅启动加载，无热重载，对应 C4），检查系统提示的
+  `available_skills` 列表。
+- [ ] **预期 A**：`.opencode/skill/ghs/SKILL.md` 出现在 `available_skills`（依赖 frontmatter
+  `name: ghs` + `description` 必填，否则被剔出 —— feat-010 反编译 opencode v1.17.9 加载 glob
+  `{skill,skills}/**/SKILL.md` 确认）。
+- [ ] **步骤 B（eval）**：调 `/skill-creator eval` 对 ghs skill 跑 benchmark。
+- [ ] **预期 B**：编排型 skill 的 benchmark 需对「工具调用序列」断言（而非纯文本输出）；即便
+  benchmark 不划算，SKILL.md 作「人类可读编排规范 + 系统提示内可见 skill」已兑现机制三核心价值
+  （对应 R5 缓解）。记录 eval 可行性结论供后续优化。
+
+---
+
 ## 备注
 
 - 本清单为活文档：新增自动化测试时把对应人工项迁到「已自动化覆盖」段并指向新测试文件。

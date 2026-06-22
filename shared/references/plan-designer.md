@@ -161,3 +161,50 @@ PLAN DESIGN COMPLETE
 - Need user clarification: `QUESTION: <specific question>`
   - Use only when the answer genuinely cannot be inferred from code or the requirement
   - Do not use QUESTION as a substitute for your own technical judgment
+
+## 可选:复用内置 plan agent
+
+> 本节为 s1 sprint（`workflow-planagent-skill`）机制二的用户/集成方指南。默认不需要配置——ghs
+> 自建 `ghs-plan-designer` subagent 已预置分隔标记契约，开箱即用。仅当希望复用 opencode 内置
+> `Config.agent.plan` 时参考本节。对应方案 §3.2 + §5 R3/D3。
+
+### 配置
+
+在 `.ghs/ghs.json` 的 `models` 旁加 `planner_backend` 字段：
+
+```json
+{
+  "models": { "context": "...", "designer": "...", "reviewer": "..." },
+  "planner_backend": "builtin-plan"
+}
+```
+
+- 合法值：`"ghs-plan-designer"`（默认）/ `"builtin-plan"`。
+- 非法值（如 `"foo"`）→ `GhsConfigSchema` 的 `z.enum(...)` ZodError 上抛，`ghs-config` strict 报错。
+- 老项目 `ghs.json` 缺该字段 → `.default("ghs-plan-designer")` 填默认，无须迁移。
+
+### 内置 plan agent 与 ghs-plan-designer 的差异
+
+| 维度 | `ghs-plan-designer`（默认） | `builtin-plan`（opencode 内置） |
+|------|------------------------------|----------------------------------|
+| 形态 | ghs 自建 subagent markdown（`shared/agents/ghs-plan-designer.md.template`，frontmatter `mode: subagent`） | opencode 内置 `Config.agent.plan`（name 为 `"plan"`） |
+| 分隔标记契约 | **预置**在 agent markdown 内（`<<<PLAN_START>>>` / `<<<PLAN_END>>>`） | **无预置**，经 dispatch prompt（`PLAN_DESIGNER_PROMPT_BUILTIN`）内嵌注入 |
+| Task 派发 | 主 AI 按 agent name `ghs-plan-designer` 派发 | 主 AI 按内置 name `"plan"` 派发 |
+| 解析 | `parsePlan` 提取 delimited 输出 | 同左（依赖内置 agent 遵循注入的契约） |
+
+### 分隔标记契约注入
+
+内置 plan agent 没有预置 ghs 分隔标记契约。`plan-review.ts` 在 `planner_backend === "builtin-plan"`
+时，经 `getDesignerPrompt("builtin-plan")` 返回 `PLAN_DESIGNER_PROMPT_BUILTIN` —— 该 prompt **内嵌**
+分隔标记契约说明（只用名称指代起始/结束分隔标记，不写死字面量），随 Task 派发指令下发给内置
+plan agent。内置 agent 须在输出中遵循 `<<<PLAN_START>>>` / `<<<PLAN_END>>>` 各占独立行，`parsePlan`
+才能提取成功并进入 `ghs-plan-review` review 阶段。
+
+### 当前 verdict（对应 §5 R3 / D3）
+
+- **可实现**：`Config.agent.plan` 存在（C5），Task 按 agent name 字符串派发，分隔标记契约经 dispatch
+  prompt 注入在技术上成立（feat-006 spike 结论 `implementable-with-manual-e2e`）。
+- **LLM 遵循度待 E2E 确认**：内置 plan agent 是否稳定输出分隔标记是核心不确定点（R3）。
+- **降级预案（D3）**：若内置 agent 输出不带分隔标记 → `parsePlan` empty/malformed 分支返回重试；
+  `planner_backend` 默认 `ghs-plan-designer` 可随时切回；最坏 `builtin-plan` 仅作本文档引导。
+- 真实会话的全流程手验项见 `E2E_CHECKLIST.md`「[机制二] planner_backend=builtin-plan 全流程」。
