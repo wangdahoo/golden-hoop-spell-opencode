@@ -23,7 +23,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { planReviewTool, planReviewArgsSchema, MAX_BREACHES } from "../src/tools/plan-review";
+import { planReviewTool, planReviewArgsSchema, MAX_BREACHES, setGhsConfigLoaderForTest } from "../src/tools/plan-review";
 import {
   createInitialPlanStatus,
   writePlanStatus,
@@ -579,5 +579,199 @@ describe("plan-review workflow chrome (s1-feat-005)", () => {
     expect(result).not.toContain("STALE TODO:");
     expect(result).not.toContain("▶ NEXT ACTION:");
     expect(calls).toHaveLength(0);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// planner_backend dispatch resolution (Feature s1-feat-009)
+// -----------------------------------------------------------------------------
+//
+// Mechanism 二 §3.2.1 改造点(b): the two designer-dispatch points
+// (handleSnapshotMode success + handleReviewMode revise branch) read
+// `.ghs/ghs.json` via loadGhsConfig and pass `config.planner_backend` to
+// getDesignerPrompt. Default backend returns the existing PLAN_DESIGNER_PROMPT
+// (byte-equivalent regression); builtin-plan returns PLAN_DESIGNER_PROMPT_BUILTIN.
+//
+// Two-class error handling: default-file error (msg contains "ghs.default.json")
+// → fall back + warning; user ghs.json invalid → re-throw.
+
+describe("planner_backend dispatch resolution (s1-feat-009)", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-backend-")));
+  });
+  afterEach(async () => {
+    // Always restore the real loader so the seam never bleeds into sibling
+    // tests (the sessions Map / loader are module-level singletons).
+    setGhsConfigLoaderForTest(null);
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  /** Write a `.ghs/ghs.json` fixture under the temp project root. */
+  async function writeGhsJson(dir: string, obj: unknown): Promise<void> {
+    await mkdir(join(dir, ".ghs"), { recursive: true });
+    await writeFile(join(dir, ".ghs", "ghs.json"), JSON.stringify(obj));
+  }
+
+  test("AC #1 default backend (no ghs.json) → ghs-plan-designer dispatch (regression)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+      mockCtx(tempRoot),
+    );
+
+    // Default dispatch: the self-built ghs-plan-designer subagent prompt.
+    expect(result).toContain("ghs-plan-designer");
+    expect(result).toContain("Task tool");
+    // NOT the opt-in builtin prompt.
+    expect(result).not.toContain("BUILT-IN");
+    // No fallback warning on the normal path.
+    expect(result).not.toContain("落回默认");
+  });
+
+  test("AC #2 planner_backend=builtin-plan → builtin dispatch with embedded contract (snapshot)", async () => {
+    await writeGhsJson(tempRoot, {
+      models: { context: "m-c", designer: "m-d", reviewer: "m-r" },
+      planner_backend: "builtin-plan",
+    });
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+      mockCtx(tempRoot),
+    );
+
+    // Builtin prompt: English, dispatches the built-in `plan` agent.
+    expect(result).toContain("BUILT-IN");
+    expect(result).toContain('agent: "plan"');
+    // Embedded delimiter contract (referred to by marker name in the prompt).
+    expect(result).toContain("<<<PLAN_START>>>");
+    expect(result).toContain("<<<PLAN_END>>>");
+    // NOT the default Chinese self-built dispatch opening.
+    expect(result).not.toContain("派发 `ghs-plan-designer`");
+  });
+
+  test("AC #2 review revise branch also honours planner_backend=builtin-plan", async () => {
+    await writeGhsJson(tempRoot, {
+      models: { context: "m-c", designer: "m-d", reviewer: "m-r" },
+      planner_backend: "builtin-plan",
+    });
+    const status = baselineStatus({
+      status: "reviewing",
+      round: 1,
+      max_rounds: 5,
+    });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { review: reviewBlob(longBody("Severe issue"), "FAIL") },
+      mockCtx(tempRoot),
+    );
+
+    // Revise round advanced + builtin designer dispatch emitted.
+    expect(result).toContain("revising");
+    expect(result).toContain("round 1 → 2");
+    expect(result).toContain("BUILT-IN");
+    expect(result).toContain('agent: "plan"');
+  });
+
+  test("AC #3 default-file error (msg contains ghs.default.json) → falls back + warning at end", async () => {
+    setGhsConfigLoaderForTest(async () => {
+      throw new Error(
+        "Failed to read ghs.default.json: file not found at /shared/ghs.default.json",
+      );
+    });
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // Unique session so chrome state is isolated; no recordTodoTick →
+    // "never" branch → the ▶ NEXT ACTION anchor is present, letting us prove
+    // the warning is appended AFTER it (i.e. at the very end).
+    const sid = "pr-backend-warn-1";
+    const { ctx } = mockCtxCaptured(tempRoot, sid);
+
+    const result = await planReviewTool.execute(
+      { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+      ctx,
+    );
+
+    // Fell back to the default ghs-plan-designer dispatch (still functional).
+    expect(result).toContain("ghs-plan-designer");
+    expect(result).toContain("Task tool");
+    // Warning concatenated INTO the returned string (not console.*, per C2).
+    expect(result).toContain("ghs.default.json");
+    expect(result).toContain("落回默认");
+    // The warning lands at the END — strictly after the ▶ NEXT ACTION anchor.
+    const anchorIdx = result.lastIndexOf("▶ NEXT ACTION");
+    const warnIdx = result.lastIndexOf("ghs.default.json");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    expect(warnIdx).toBeGreaterThan(anchorIdx);
+  });
+
+  test("AC #3 default-file error on revise branch → falls back + warning at end", async () => {
+    setGhsConfigLoaderForTest(async () => {
+      throw new Error(
+        "Failed to parse ghs.default.json at /shared/ghs.default.json: invalid JSON",
+      );
+    });
+    const status = baselineStatus({
+      status: "reviewing",
+      round: 1,
+      max_rounds: 5,
+    });
+    await writePlanStatus(tempRoot, status);
+
+    const sid = "pr-backend-warn-revise-1";
+    const { ctx } = mockCtxCaptured(tempRoot, sid);
+    const result = await planReviewTool.execute(
+      { review: reviewBlob(longBody("Severe"), "FAIL") },
+      ctx,
+    );
+
+    expect(result).toContain("revising");
+    // Fell back to the default designer dispatch.
+    expect(result).toContain("ghs-plan-designer");
+    // Warning present and after the anchor.
+    const anchorIdx = result.lastIndexOf("▶ NEXT ACTION");
+    const warnIdx = result.lastIndexOf("ghs.default.json");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    expect(warnIdx).toBeGreaterThan(anchorIdx);
+  });
+
+  test("AC #4 user ghs.json JSON-parse error → re-thrown, not swallowed", async () => {
+    setGhsConfigLoaderForTest(async () => {
+      throw new Error(
+        "Failed to parse ghs.json at /p/.ghs/ghs.json: invalid JSON — Unexpected token",
+      );
+    });
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    await expect(
+      planReviewTool.execute(
+        { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+        mockCtx(tempRoot),
+      ),
+    ).rejects.toThrow(/ghs\.json/);
+  });
+
+  test("AC #4 user ghs.json ZodError (no file label) → re-thrown", async () => {
+    setGhsConfigLoaderForTest(async () => {
+      throw new Error(
+        "Invalid config: planner_backend — Invalid enum value. Expected 'ghs-plan-designer' | 'builtin-plan', received 'typo-plan'",
+      );
+    });
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    await expect(
+      planReviewTool.execute(
+        { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+        mockCtx(tempRoot),
+      ),
+    ).rejects.toThrow(/Invalid enum value/);
   });
 });

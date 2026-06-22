@@ -57,9 +57,11 @@ import {
   type ParseResult,
   type Verdict,
 } from "../lib/parse.ts";
-import { PLAN_DESIGNER_PROMPT } from "../prompts/plan-designer.ts";
+import { getDesignerPrompt } from "../prompts/plan-designer.ts";
 import { PLAN_REVIEWER_PROMPT } from "../prompts/plan-reviewer.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import { loadGhsConfig, type GhsConfig } from "../lib/config.ts";
+import { pluginRoot } from "../lib/paths.ts";
 import {
   stageHeader,
   todoDirective,
@@ -341,6 +343,84 @@ function buildRetryInstruction(args: {
 // Mode handlers.
 // -----------------------------------------------------------------------------
 
+// Mechanism 二 §3.2.1 改造点(b) — Feature s1-feat-009.
+//
+// The two designer-dispatch points (handleSnapshotMode success + handleReview
+// Mode revise branch) read `.ghs/ghs.json` via `loadGhsConfig(projectDir,
+// pluginRoot())` and pass `config.planner_backend` to `getDesignerPrompt`.
+// Default backend (`ghs-plan-designer`) returns the existing
+// PLAN_DESIGNER_PROMPT verbatim → byte-equivalent regression. The opt-in
+// `builtin-plan` returns PLAN_DESIGNER_PROMPT_BUILTIN (inlined delimiter
+// contract for the built-in `plan` agent).
+//
+// Two-class error handling (plan §3.2.1(b), explicit discrimination):
+//   - Default-file error → `err.message` contains the label `ghs.default.json`
+//     (config.ts readJsonFile uses that label for shared/ghs.default.json) →
+//     fall back to `ghs-plan-designer` and surface a warning line in the
+//     returned string (execute() only returns plain strings, C2 — no
+//     console.*). Rare: plugin package corrupt.
+//   - Otherwise (user ghs.json invalid: JSON parse error labelled `ghs.json`
+//     or a ZodError with no file label) → re-throw so the misconfiguration is
+//     surfaced loudly, consistent with ghs-config strict reporting.
+// Normal path (no user ghs.json) never throws — loadGhsConfig returns full
+// defaults — so the try/catch only engages on actual read/parse failures.
+
+/**
+ * Configurable loader used by {@link resolveDesignerDispatch}. Defaults to the
+ * real {@link loadGhsConfig}; tests override it via {@link
+ * setGhsConfigLoaderForTest} to simulate config-read failures. This is a
+ * module-level seam rather than Bun `mock.module` to stay robust across the
+ * ESM live-binding semantics the rest of the suite relies on (no other test
+ * in this repo uses module mocking).
+ */
+let _ghsConfigLoader: (
+  projectDir: string,
+  pluginRootDir: string,
+) => Promise<{ config: GhsConfig; defaults_used: boolean }> = loadGhsConfig;
+
+/**
+ * @internal Test seam — override the config loader used by designer-dispatch
+ * resolution. Pass `null` to restore the real {@link loadGhsConfig}.
+ */
+export function setGhsConfigLoaderForTest(
+  loader: typeof _ghsConfigLoader | null,
+): void {
+  _ghsConfigLoader = loader ?? loadGhsConfig;
+}
+
+/**
+ * Resolve the plan-designer dispatch prompt (and optional fallback warning)
+ * by reading the merged ghs config.
+ *
+ * @returns `{ prompt, warning }` — `warning` is `""` on the normal / opt-in
+ *          paths, and a non-empty human-readable line when the default-file
+ *          read failed and the backend fell back to `ghs-plan-designer`.
+ * @throws when the USER's `ghs.json` is invalid (re-thrown unchanged) — never
+ *         throws for a default-file failure (those fall back instead).
+ */
+async function resolveDesignerDispatch(projectDir: string): Promise<{
+  prompt: string;
+  warning: string;
+}> {
+  let backend: "ghs-plan-designer" | "builtin-plan";
+  try {
+    const { config } = await _ghsConfigLoader(projectDir, pluginRoot());
+    backend = config.planner_backend;
+  } catch (err) {
+    const msg = (err as Error | undefined)?.message ?? String(err);
+    if (msg.includes("ghs.default.json")) {
+      return {
+        prompt: getDesignerPrompt("ghs-plan-designer"),
+        warning:
+          "⚠️ ghs.default.json 缺失或非法，已落回默认 plan-designer 后端" +
+          "（插件包可能损坏，建议重装）。",
+      };
+    }
+    throw err;
+  }
+  return { prompt: getDesignerPrompt(backend), warning: "" };
+}
+
 /**
  * Snapshot mode — parse the context-haiku subagent's response, persist the
  * snapshot, and return the dispatch instruction for the plan-designer.
@@ -354,7 +434,7 @@ async function handleSnapshotMode(args: {
   projectDir: string;
   status: PlanStatus;
   rawText: string;
-}): Promise<string> {
+}): Promise<{ body: string; warning: string }> {
   const { projectDir, status, rawText } = args;
   const result = parseContextSnapshot(rawText);
 
@@ -364,13 +444,16 @@ async function handleSnapshotMode(args: {
       status.context_file.replace(/\.md$/, ""),
       rawText,
     );
-    return buildRetryInstruction({
-      projectDir,
-      planId: status.plan_id,
-      mode: "snapshot",
-      result,
-      rawPath,
-    });
+    return {
+      body: buildRetryInstruction({
+        projectDir,
+        planId: status.plan_id,
+        mode: "snapshot",
+        result,
+        rawPath,
+      }),
+      warning: "",
+    };
   }
 
   // Success — persist the snapshot.
@@ -384,24 +467,32 @@ async function handleSnapshotMode(args: {
   };
   await writePlanStatus(projectDir, nextStatus);
 
-  return [
-    resultHeader({
-      projectDir,
-      planId: status.plan_id,
-      mode: "snapshot",
-      round: nextStatus.round,
-      status: nextStatus.status,
-    }),
-    `✅ Context snapshot 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
-    "",
-    `Snapshot 写入：${join(plansDir(projectDir), status.context_file)}`,
-    `Codegraph 路径：${status.codegraph_available ? "codegraph" : "grep 回退"}`,
-    "",
-    "下一步：派发 plan-designer 设计技术方案。",
-    "",
-    "--- plan-designer dispatch ---",
-    PLAN_DESIGNER_PROMPT,
-  ].join("\n");
+  // Read planner_backend once before emitting the dispatch directive
+  // (mechanism 二 §3.2.1 改造点(b), Feature s1-feat-009).
+  const { prompt: designerPrompt, warning } =
+    await resolveDesignerDispatch(projectDir);
+
+  return {
+    body: [
+      resultHeader({
+        projectDir,
+        planId: status.plan_id,
+        mode: "snapshot",
+        round: nextStatus.round,
+        status: nextStatus.status,
+      }),
+      `✅ Context snapshot 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+      "",
+      `Snapshot 写入：${join(plansDir(projectDir), status.context_file)}`,
+      `Codegraph 路径：${status.codegraph_available ? "codegraph" : "grep 回退"}`,
+      "",
+      "下一步：派发 plan-designer 设计技术方案。",
+      "",
+      "--- plan-designer dispatch ---",
+      designerPrompt,
+    ].join("\n"),
+    warning,
+  };
 }
 
 /**
@@ -414,7 +505,7 @@ async function handlePlanMode(args: {
   projectDir: string;
   status: PlanStatus;
   rawText: string;
-}): Promise<string> {
+}): Promise<{ body: string; warning: string }> {
   const { projectDir, status, rawText } = args;
   const result = parsePlan(rawText);
 
@@ -424,13 +515,16 @@ async function handlePlanMode(args: {
       status.plan_file.replace(/\.md$/, ""),
       rawText,
     );
-    return buildRetryInstruction({
-      projectDir,
-      planId: status.plan_id,
-      mode: "plan",
-      result,
-      rawPath,
-    });
+    return {
+      body: buildRetryInstruction({
+        projectDir,
+        planId: status.plan_id,
+        mode: "plan",
+        result,
+        rawPath,
+      }),
+      warning: "",
+    };
   }
 
   await persistArtefact(projectDir, status.plan_file, result.content, result);
@@ -442,23 +536,26 @@ async function handlePlanMode(args: {
   };
   await writePlanStatus(projectDir, nextStatus);
 
-  return [
-    resultHeader({
-      projectDir,
-      planId: status.plan_id,
-      mode: "plan",
-      round: nextStatus.round,
-      status: nextStatus.status,
-    }),
-    `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
-    "",
-    `Plan 写入：${join(plansDir(projectDir), status.plan_file)}`,
-    "",
-    "下一步：派发 plan-reviewer 评审技术方案。",
-    "",
-    "--- plan-reviewer dispatch ---",
-    PLAN_REVIEWER_PROMPT,
-  ].join("\n");
+  return {
+    body: [
+      resultHeader({
+        projectDir,
+        planId: status.plan_id,
+        mode: "plan",
+        round: nextStatus.round,
+        status: nextStatus.status,
+      }),
+      `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+      "",
+      `Plan 写入：${join(plansDir(projectDir), status.plan_file)}`,
+      "",
+      "下一步：派发 plan-reviewer 评审技术方案。",
+      "",
+      "--- plan-reviewer dispatch ---",
+      PLAN_REVIEWER_PROMPT,
+    ].join("\n"),
+    warning: "",
+  };
 }
 
 /**
@@ -480,7 +577,7 @@ async function handleReviewMode(args: {
   projectDir: string;
   status: PlanStatus;
   rawText: string;
-}): Promise<string> {
+}): Promise<{ body: string; warning: string }> {
   const { projectDir, status, rawText } = args;
   const result = parseReview(rawText);
   const verdict: Verdict = result.verdict;
@@ -515,10 +612,13 @@ async function handleReviewMode(args: {
       result,
       rawPath,
     });
-    return retry.replace(
-      /解析失败（status:.*?\)/,
-      `解析失败（status: ${result.status}, verdict: ${verdict ?? "null"}）`,
-    );
+    return {
+      body: retry.replace(
+        /解析失败（status:.*?\)/,
+        `解析失败（status: ${result.status}, verdict: ${verdict ?? "null"}）`,
+      ),
+      warning: "",
+    };
   }
 
   // We have a usable review — persist it + record review_file on the status.
@@ -533,21 +633,24 @@ async function handleReviewMode(args: {
     };
     await writePlanStatus(projectDir, nextStatus);
 
-    return [
-      resultHeader({
-        projectDir,
-        planId: status.plan_id,
-        mode: "review",
-        round: nextStatus.round,
-        status: nextStatus.status,
-      }),
-      "✅ Review PASS —— 方案通过评审（仅 Optimization 项，无 Severe/Medium）。",
-      "",
-      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
-      "",
-      "下一步：请向用户确认是否批准该方案。用户批准后调用 `ghs-plan-finalize` 写出最终 plan。",
-      "（OpenCode 无同步阻塞询问 —— 在 chat 中向用户提问即可。）",
-    ].join("\n");
+    return {
+      body: [
+        resultHeader({
+          projectDir,
+          planId: status.plan_id,
+          mode: "review",
+          round: nextStatus.round,
+          status: nextStatus.status,
+        }),
+        "✅ Review PASS —— 方案通过评审（仅 Optimization 项，无 Severe/Medium）。",
+        "",
+        `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+        "",
+        "下一步：请向用户确认是否批准该方案。用户批准后调用 `ghs-plan-finalize` 写出最终 plan。",
+        "（OpenCode 无同步阻塞询问 —— 在 chat 中向用户提问即可。）",
+      ].join("\n"),
+      warning: "",
+    };
   }
 
   // verdict === "FAIL" — enforce the round / breach caps before instructing
@@ -567,25 +670,28 @@ async function handleReviewMode(args: {
     };
     await writePlanStatus(projectDir, nextStatus);
 
-    return [
-      resultHeader({
-        projectDir,
-        planId: status.plan_id,
-        mode: "review",
-        round: nextStatus.round,
-        status: nextStatus.status,
-      }),
-      "🛑 Review FAIL 且已达硬上限（max_rounds=" + status.max_rounds +
-        ", breaches=" + status.max_rounds_breaches +
-        "/" + MAX_BREACHES + "）—— 不再允许修订轮次。",
-      "",
-      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
-      "",
-      "用户须二选一（在 chat 中向用户提问）：",
-      "  1. 接受当前方案（带 Severe/Medium 未修复项）→ 调用 `ghs-plan-finalize`，",
-      "     产物 plan 顶部会标注 `WARNING: accepted with unfixed issues`。",
-      "  2. 终止 → 状态改为 aborted；用户重新 `ghs-plan-start` 启动新 plan。",
-    ].join("\n");
+    return {
+      body: [
+        resultHeader({
+          projectDir,
+          planId: status.plan_id,
+          mode: "review",
+          round: nextStatus.round,
+          status: nextStatus.status,
+        }),
+        "🛑 Review FAIL 且已达硬上限（max_rounds=" + status.max_rounds +
+          ", breaches=" + status.max_rounds_breaches +
+          "/" + MAX_BREACHES + "）—— 不再允许修订轮次。",
+        "",
+        `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+        "",
+        "用户须二选一（在 chat 中向用户提问）：",
+        "  1. 接受当前方案（带 Severe/Medium 未修复项）→ 调用 `ghs-plan-finalize`，",
+        "     产物 plan 顶部会标注 `WARNING: accepted with unfixed issues`。",
+        "  2. 终止 → 状态改为 aborted；用户重新 `ghs-plan-start` 启动新 plan。",
+      ].join("\n"),
+      warning: "",
+    };
   }
 
   if (atSoftCap) {
@@ -602,30 +708,33 @@ async function handleReviewMode(args: {
     await writePlanStatus(projectDir, nextStatus);
 
     const remaining = MAX_BREACHES - status.max_rounds_breaches;
-    return [
-      resultHeader({
-        projectDir,
-        planId: status.plan_id,
-        mode: "review",
-        round: nextStatus.round,
-        status: nextStatus.status,
-      }),
-      "⚠️ Review FAIL 且已达软上限 max_rounds=" + status.max_rounds +
-        "（剩余 breach 额度 " + remaining + "/" + MAX_BREACHES + "）。",
-      "",
-      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
-      "",
-      "用户须三选一（在 chat 中向用户提问，附上评审报告）：",
-      "  1. 继续修订（一次性 breach）→ 再次调用 `ghs-plan-review(review=...)` 无法触发，",
-      "     请改用 `ghs-plan-review(plan=<修订后的 designer 输出>)`；调用前请告知 AI",
-      "     用户选择了 breach，AI 会确保 status 的 max_rounds_breaches 自增。（注：",
-      "     当前实现把 breach 计数委托给下一次 plan 模式调用时推进 —— 见下方说明。）",
-      "  2. 接受当前方案（带未修复项）→ 调用 `ghs-plan-finalize`。",
-      "  3. 终止 → 重新 `ghs-plan-start`。",
-      "",
-      "说明：breach 计数 (max_rounds_breaches) 在下一轮 designer 产物被 ghs-plan-review(plan) 接收时",
-      "自增并推进 round —— 这样状态机始终在单一入口推进，避免双写。",
-    ].join("\n");
+    return {
+      body: [
+        resultHeader({
+          projectDir,
+          planId: status.plan_id,
+          mode: "review",
+          round: nextStatus.round,
+          status: nextStatus.status,
+        }),
+        "⚠️ Review FAIL 且已达软上限 max_rounds=" + status.max_rounds +
+          "（剩余 breach 额度 " + remaining + "/" + MAX_BREACHES + "）。",
+        "",
+        `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+        "",
+        "用户须三选一（在 chat 中向用户提问，附上评审报告）：",
+        "  1. 继续修订（一次性 breach）→ 再次调用 `ghs-plan-review(review=...)` 无法触发，",
+        "     请改用 `ghs-plan-review(plan=<修订后的 designer 输出>)`；调用前请告知 AI",
+        "     用户选择了 breach，AI 会确保 status 的 max_rounds_breaches 自增。（注：",
+        "     当前实现把 breach 计数委托给下一次 plan 模式调用时推进 —— 见下方说明。）",
+        "  2. 接受当前方案（带未修复项）→ 调用 `ghs-plan-finalize`。",
+        "  3. 终止 → 重新 `ghs-plan-start`。",
+        "",
+        "说明：breach 计数 (max_rounds_breaches) 在下一轮 designer 产物被 ghs-plan-review(plan) 接收时",
+        "自增并推进 round —— 这样状态机始终在单一入口推进，避免双写。",
+      ].join("\n"),
+      warning: "",
+    };
   }
 
   // Below soft cap — auto-advance to the next revise round.
@@ -644,25 +753,33 @@ async function handleReviewMode(args: {
   };
   await writePlanStatus(projectDir, nextStatus);
 
-  return [
-    resultHeader({
-      projectDir,
-      planId: status.plan_id,
-      mode: "review",
-      round: nextStatus.round,
-      status: nextStatus.status,
-    }),
-    "⚠️ Review FAIL —— 触发修订轮次 round " + status.round + " → " + nextStatus.round + "。",
-    "",
-    `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
-    `剩余轮次预算：${status.max_rounds - nextStatus.round} 轮（max_rounds=${status.max_rounds}）`,
-    "",
-    "下一步：用 Task tool 重新派发 `ghs-plan-designer`，把本轮评审报告作为修订反馈一并传入。",
-    "designer 产出后，再次调用 `ghs-plan-review(plan=...)`。",
-    "",
-    "--- plan-designer dispatch (revise) ---",
-    PLAN_DESIGNER_PROMPT,
-  ].join("\n");
+  // Read planner_backend once before emitting the re-dispatch directive
+  // (mechanism 二 §3.2.1 改造点(b), Feature s1-feat-009).
+  const { prompt: designerPrompt, warning } =
+    await resolveDesignerDispatch(projectDir);
+
+  return {
+    body: [
+      resultHeader({
+        projectDir,
+        planId: status.plan_id,
+        mode: "review",
+        round: nextStatus.round,
+        status: nextStatus.status,
+      }),
+      "⚠️ Review FAIL —— 触发修订轮次 round " + status.round + " → " + nextStatus.round + "。",
+      "",
+      `Review 写入：${join(plansDir(projectDir), reviewFile)}`,
+      `剩余轮次预算：${status.max_rounds - nextStatus.round} 轮（max_rounds=${status.max_rounds}）`,
+      "",
+      "下一步：用 Task tool 重新派发 `ghs-plan-designer`，把本轮评审报告作为修订反馈一并传入。",
+      "designer 产出后，再次调用 `ghs-plan-review(plan=...)`。",
+      "",
+      "--- plan-designer dispatch (revise) ---",
+      designerPrompt,
+    ].join("\n"),
+    warning,
+  };
 }
 
 /** Current local timestamp in the state.ts format (YYYY-MM-DDTHH:mm:ss). */
@@ -786,13 +903,13 @@ export const planReviewTool = tool({
           ? (validated.plan as string)
           : (validated.review as string);
 
-    let body: string;
+    let outcome: { body: string; warning: string };
     if (mode === "snapshot") {
-      body = await handleSnapshotMode({ projectDir, status, rawText });
+      outcome = await handleSnapshotMode({ projectDir, status, rawText });
     } else if (mode === "plan") {
-      body = await handlePlanMode({ projectDir, status, rawText });
+      outcome = await handlePlanMode({ projectDir, status, rawText });
     } else {
-      body = await handleReviewMode({ projectDir, status, rawText });
+      outcome = await handleReviewMode({ projectDir, status, rawText });
     }
     // Apply workflow chrome (mechanism-1 injection point ② main path).
     // Post-advance timing (plan §3.1 时序约束 — 关键): composeChrome invokes
@@ -802,13 +919,19 @@ export const planReviewTool = tool({
     // staleTodoWarning drift test (AC #3): a prior call established
     // lastStageSeenByTool='plan:designing' and this call reads
     // post-advance 'plan:reviewing' → drift → staleTodoWarning.
-    return composeChrome({
+    const composed = await composeChrome({
       ctx,
       projectDir,
       toolName: "ghs-plan-review",
       toolArgs: args,
-      body,
+      body: outcome.body,
     });
+    // Feature s1-feat-009: when loadGhsConfig fell back to the default
+    // backend due to a default-file error, the warning is concatenated to
+    // the END of execute()'s returned string (C2: execute only returns plain
+    // strings — no console.*). Appended after chrome so it is the last thing
+    // the main AI reads.
+    return outcome.warning ? `${composed}\n\n${outcome.warning}` : composed;
   },
 });
 
