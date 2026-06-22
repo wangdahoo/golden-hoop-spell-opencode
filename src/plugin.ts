@@ -56,11 +56,25 @@ const DEFAULT_SESSION_ID = "_default";
 
 /**
  * Single-line hint pushed into the AI's system prompt on every chat. Lists
- * all 10 implemented tool names, the workflow order, and the model-config
- * entry point. The plan-dispatcher subagents (ghs-context-haiku /
- * ghs-plan-designer / ghs-plan-reviewer) are invoked by the plan tools via
- * the Task tool; ghs-code's coding subagent is dispatched the same way
- * after ghs-code returns its feature-impl prompt.
+ * all 10 implemented tool names, the workflow order, the model-config entry
+ * point, and a pointer to the `ghs` skill (plan §3.3 机制三). The
+ * plan-dispatcher subagents (ghs-context-haiku / ghs-plan-designer /
+ * ghs-plan-reviewer) are invoked by the plan tools via the Task tool;
+ * ghs-code's coding subagent is dispatched the same way after ghs-code
+ * returns its feature-impl prompt.
+ *
+ * Slimmed from the pre-机制三 shape (s1-feat-012): the detailed orchestration
+ * rules — stage-by-stage workflow discipline, broken-flow recovery, the
+ * reading list — now live in `shared/skill/ghs/SKILL.md` (copied to
+ * `<projectDir>/.opencode/skill/ghs/SKILL.md` by ghs-init, surfaced in the
+ * system prompt as the `ghs` skill). This hint points at that skill and
+ * retains only what mechanism one needs as an inline nudge:
+ *   - Tool list + workflow order (regression contract: test/commands.test.ts).
+ *   - Todo Discipline segment (plan §3.1 注入点① / C1 — the right-side TODO
+ *     panel's only driver is the built-in `todowrite` tool, which the
+ *     disconnect-detection state machine observes via `todo.updated` events;
+ *     without this nudge the panel stays empty and mechanism one is blind).
+ *   - ▶ NEXT ACTION anchoring (don't skip the next tool call).
  *
  * Kept to one line so it shows up as a single contiguous block in the
  * rendered system prompt (easier for the AI to spot). The user-facing note
@@ -73,13 +87,18 @@ const SYSTEM_HINT_TEXT =
   "Workflow order: ghs-init → ghs-config → ghs-plan-start → ghs-plan-review → ghs-plan-finalize → ghs-sprint → ghs-code → ghs-status → ghs-archive. " +
   "Model IDs for the 3 plan-dispatcher subagents are user-configurable via `.ghs/ghs.json`; after editing run `ghs-config` then restart OpenCode. " +
   "Slash commands /ghs-init, /ghs-config, /ghs-plan-start, /ghs-sprint, /ghs-code, /ghs-status, /ghs-archive, /ghs-force-archive are auto-registered on startup. " +
-  // --- Todo Discipline (plan §3.1 注入点①) -----------------------------------
-  // Nudges the main AI to drive the right-side TODO panel via the built-in
-  // `todowrite` tool — the ONLY thing that can render to that panel (C1).
-  // Without this, the panel stays empty and the disconnect-detection signals
-  // (todo.updated events) never fire, making mechanism one blind. This is a
-  // best-effort nudge, not a program-level enforcement.
-  "Todo Discipline: when entering a ghs multi-step workflow (plan / sprint / code), call the built-in `todowrite` tool to build a stage checklist and keep it in sync as stages advance — every stage transition marks the prior stage `completed` and the current one `in_progress`. The `▶ NEXT ACTION` anchor at the end of each tool response is mandatory: execute it via the named tool call, do NOT skip ahead or take over the next step yourself. This keeps the right-side TODO panel accurate and lets the disconnect-detection state machine observe your progress.";
+  // --- Skill pointer (plan §3.3 机制三) --------------------------------------
+  // Detailed orchestration rules (stage discipline, broken-flow recovery,
+  // reading list) live in the ghs skill — SYSTEM_HINT is now a pointer, not
+  // a duplicate. SKILL.md is copied by ghs-init to .opencode/skill/ghs/
+  // and surfaces in the system prompt's available_skills list.
+  "Detailed orchestration rules (stage-by-stage workflow discipline, broken-flow recovery, reading list) live in the `ghs` skill at `.opencode/skill/ghs/SKILL.md` — consult it when a stage is unfamiliar. " +
+  // --- Todo Discipline (plan §3.1 注入点①, retained through 机制三 slim) -------
+  // Best-effort nudge, not program-level enforcement. Kept inline (rather
+  // than moved entirely to SKILL.md) because mechanism one depends on the
+  // main AI calling `todowrite` — the only thing that can render to the
+  // right-side TODO panel (C1). The fuller justification lives in SKILL.md.
+  "Todo Discipline: when entering a ghs multi-step workflow (plan / sprint / code), call the built-in `todowrite` tool to seed a stage checklist and refresh it on every stage transition (prior stage → `completed`, current → `in_progress`). The `▶ NEXT ACTION` anchor at the end of each tool response is mandatory — execute it via the named tool call; do NOT skip ahead or take over the next step yourself.";
 
 /**
  * The ghs OpenCode plugin. Default-exported from `src/index.ts`.
