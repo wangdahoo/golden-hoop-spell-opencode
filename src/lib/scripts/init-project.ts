@@ -95,6 +95,11 @@ export interface InitProjectResult {
   gitignoreFile: string;
   /** Whether .gitignore was modified (true) or already contained `.ghs` (false). */
   gitignoreUpdated: boolean;
+  /**
+   * Absolute path of the copied `.opencode/skill/ghs/SKILL.md`, or `null` when
+   * the shared skill asset was absent (guarded copy — mechanism three §3.3).
+   */
+  skillFile: string | null;
   /** The project name written into features.json. */
   projectName: string;
   /** The project description written into features.json. */
@@ -203,11 +208,42 @@ export async function createProgressMd(
 }
 
 /**
+ * Copy the ghs orchestration skill markdown to
+ * `<outputDir>/.opencode/skill/ghs/SKILL.md`.
+ *
+ * This is a TS-port enhancement over `init_project.py` (mechanism three,
+ * plan §3.3): the host project gets a discoverable ghs skill so OpenCode
+ * surfaces the workflow discipline in its system prompt after restart. The
+ * copy is **guarded** — it only runs when the source asset exists under
+ * `shared/skill/ghs/SKILL.md` — so init stays idempotent and silent on
+ * builds that strip the asset. Returns the destination path when a copy
+ * happened, or `null` when the source was absent (no throw).
+ *
+ * NOTE: this intentionally does NOT mirror any Python oracle step, so it is
+ * excluded from the equivalence comparison (which only inspects features.json,
+ * progress.md, .gitignore — see test/equivalence/init.test.ts).
+ */
+export async function copySkillMd(
+  outputDir: string,
+  pluginRootPath: string = defaultPluginRoot(),
+): Promise<string | null> {
+  const src = join(pluginRootPath, "shared", "skill", "ghs", "SKILL.md");
+  if (!existsSync(src)) {
+    return null;
+  }
+  const dest = join(outputDir, ".opencode", "skill", "ghs", "SKILL.md");
+  await mkdir(dirname(dest), { recursive: true });
+  await copyFile(src, dest);
+  return dest;
+}
+
+/**
  * Initialize the `.ghs/` tracking files for a project.
  *
  * Mirrors the body of Python `main()` minus the stdout prints: it validates
  * preconditions (existing files vs `force`), creates features.json +
- * progress.md, and updates .gitignore.
+ * progress.md, updates .gitignore, and (as a TS-port enhancement) seeds the
+ * ghs orchestration skill into `.opencode/skill/ghs/`.
  *
  * @throws when the templates cannot be found, or when files already exist and
  *   `force` is not set.
@@ -248,6 +284,10 @@ export async function initProject(
   );
   const progressFile = await createProgressMd(outputDir, pluginRootPath);
   const [gitignoreFile, gitignoreUpdated] = await ensureGitignore(outputDir);
+  // Mechanism three (plan §3.3): seed the ghs orchestration skill so the host
+  // project picks up the workflow discipline after an OpenCode restart.
+  // Guarded copy — no-op (returns null) when the shared asset is absent.
+  const skillFile = await copySkillMd(outputDir, pluginRootPath);
 
   return {
     outputDir,
@@ -255,6 +295,7 @@ export async function initProject(
     progressFile,
     gitignoreFile,
     gitignoreUpdated,
+    skillFile,
     projectName,
     projectDescription,
   };
