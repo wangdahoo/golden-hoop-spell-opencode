@@ -44,6 +44,16 @@ import {
 import { CONTEXT_CODEGRAPH_PROMPT } from "../prompts/context-codegraph.ts";
 import { CONTEXT_GREP_PROMPT } from "../prompts/context-grep.ts";
 import { formatLocalDate } from "../lib/scripts/archive-sprint.ts";
+import {
+  stageHeader,
+  todoDirective,
+  nextActionAnchor,
+  staleTodoWarning,
+} from "../lib/workflow-chrome.ts";
+import {
+  getStageSignature,
+  classifyStaleState,
+} from "../lib/todo-tracker.ts";
 
 /**
  * Maximum slug length (in characters) we keep from a sanitised requirement.
@@ -55,6 +65,19 @@ import { formatLocalDate } from "../lib/scripts/archive-sprint.ts";
  * descriptive enough to disambiguate plans on the same day.
  */
 const MAX_SLUG_LENGTH = 60;
+
+/**
+ * High-level plan-workflow stages surfaced in the `todoDirective` checklist
+ * (mechanism-1 injection point ②, Feature s1-feat-005). The labels match the
+ * `plan:<status>` signatures produced by `getStageSignature` so the
+ * in_progress marker lines up with the stage banner the same tool prepends.
+ * `plan:finalizing` is the post-review hand-off bucket — it doesn't map to a
+ * literal `status.json` value (finalize flips `status` to `approved`, which
+ * is terminal and therefore untracked), but the AI's todo checklist still
+ * benefits from showing "finalize" as a pending stage before the sprint
+ * transition.
+ */
+const PLAN_STAGES = ["plan:designing", "plan:reviewing", "plan:finalizing"];
 
 /**
  * Sanitise an arbitrary human-readable string into a filesystem-safe slug.
@@ -184,7 +207,7 @@ export const planStartTool = tool({
       // writePlanStatus can throw if mkdir fails (permissions, disk full) or
       // if the Zod schema somehow rejects our object (shouldn't happen for a
       // freshly-built status). Surface the message so the AI/user can diagnose.
-      return [
+      const errorBody = [
         "❌ ghs-plan-start failed to write initial status.json:",
         "",
         (err as Error).message,
@@ -193,6 +216,17 @@ export const planStartTool = tool({
         `Plan id:          ${planId}`,
         `Codegraph path:   ${codegraphAvailable ? "codegraph" : "grep fallback"}`,
       ].join("\n");
+      // Even on the failure path we attempt the post-advance chrome read —
+      // the write may have partially succeeded OR a prior plan's status may
+      // still be active — but if no active plan exists getStageSignature
+      // returns null and the chrome is a no-op (judgment-table row 1).
+      return composeChrome({
+        ctx,
+        projectDir,
+        toolName: "ghs-plan-start",
+        toolArgs: args,
+        body: errorBody,
+      });
     }
 
     // (5) Select the context-collection dispatch directive based on the probe.
@@ -227,6 +261,96 @@ export const planStartTool = tool({
     lines.push("");
     lines.push("--- context-haiku dispatch directive ---");
     lines.push(contextPrompt);
-    return lines.join("\n");
+    // (7) Apply workflow chrome (mechanism-1 injection point ② main path).
+    // Post-advance timing: getStageSignature is invoked AFTER writePlanStatus
+    // completed, so it observes the just-written `designing` status — this is
+    // the self-consistency premise for the never branch firing on the first
+    // ghs-plan-start call (plan §3.1 时序约束).
+    return composeChrome({
+      ctx,
+      projectDir,
+      toolName: "ghs-plan-start",
+      toolArgs: args,
+      body: lines.join("\n"),
+    });
   },
 });
+
+/**
+ * Compose the workflow chrome around an arbitrary body string and call
+ * `ctx.metadata` to set the tool-card title (mechanism-1 injection point ② +
+ * ③ main paths, Feature s1-feat-005).
+ *
+ * Post-advance timing (plan §3.1 时序约束 — 关键): the caller MUST invoke
+ * this helper AFTER its own `writePlanStatus` / equivalent state write so
+ * `getStageSignature` reads the post-advance `status` field. The two key
+ * properties (first call → todoDirective; stage transition → staleTodoWarning)
+ * are only self-consistent on the post-advance read.
+ *
+ * When `getStageSignature` returns null (single-step tool, terminal status,
+ * no active plan, or read failure — judgment table row 1) the body is
+ * returned verbatim with no chrome and `ctx.metadata` is NOT called: this
+ * tool invocation is not participating in disconnect detection.
+ *
+ * Otherwise:
+ *   - prepend `stageHeader(stage)`
+ *   - append `todoDirective(PLAN_STAGES, currentIdx)` when `never`
+ *   - append `staleTodoWarning(stage)` when `drift`
+ *   - append nothing stale/todo-related when `fresh`
+ *   - always append `nextActionAnchor(NEXT_ACTION_PLAN_START)`
+ *   - set `ctx.metadata({ title: "[ghs] <stage>" })` (injection point ③ main)
+ *
+ * `body` is the existing return text; the helper returns the chrome-wrapped
+ * string ready for `execute` to return.
+ */
+async function composeChrome(args: {
+  ctx: ToolContext;
+  projectDir: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  body: string;
+}): Promise<string> {
+  const { ctx, projectDir, toolName, toolArgs, body } = args;
+  const stage = await getStageSignature(toolName, projectDir, toolArgs);
+  const staleClass = classifyStaleState(ctx.sessionID, stage);
+
+  if (stage === null) {
+    return body;
+  }
+
+  // Injection point ③ main path (channel B) — best-effort visual chrome on
+  // the tool card; does NOT drive the right-panel todo. Wrapped in a guard
+  // so a throwing ctx.metadata impl cannot poison the tool's text channel.
+  try {
+    ctx.metadata({
+      title: `[ghs] ${stage}`,
+      metadata: { stage, stale: staleClass },
+    });
+  } catch {
+    // best-effort: visual chrome must never crash the tool result.
+  }
+
+  const header = stageHeader(stage);
+  const currentIdx = Math.max(0, PLAN_STAGES.indexOf(stage));
+  const todoLine =
+    staleClass === "never"
+      ? todoDirective(PLAN_STAGES, currentIdx)
+      : staleClass === "drift"
+        ? staleTodoWarning(stage)
+        : "";
+  const anchor = nextActionAnchor(NEXT_ACTION_PLAN_START);
+
+  const prefix = `${header}\n\n`;
+  const suffixParts: string[] = [];
+  if (todoLine) suffixParts.push(todoLine);
+  suffixParts.push(anchor);
+  const suffix = `\n\n${suffixParts.join("\n\n")}`;
+  return `${prefix}${body}${suffix}`;
+}
+
+/**
+ * The `▶ NEXT ACTION` anchor text used by `ghs-plan-start`. Single source so
+ * the chrome helper and any future ad-hoc text stay aligned.
+ */
+const NEXT_ACTION_PLAN_START =
+  "dispatch the `ghs-context-haiku` subagent via the Task tool, then call `ghs-plan-review(snapshot=...)` with its delimited output";

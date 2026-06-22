@@ -60,6 +60,36 @@ import {
 import { PLAN_DESIGNER_PROMPT } from "../prompts/plan-designer.ts";
 import { PLAN_REVIEWER_PROMPT } from "../prompts/plan-reviewer.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import {
+  stageHeader,
+  todoDirective,
+  nextActionAnchor,
+  staleTodoWarning,
+} from "../lib/workflow-chrome.ts";
+import {
+  getStageSignature,
+  classifyStaleState,
+} from "../lib/todo-tracker.ts";
+
+/**
+ * High-level plan-workflow stages surfaced in the `todoDirective` checklist
+ * (mechanism-1 injection point ②, Feature s1-feat-005). Same labels used by
+ * `ghs-plan-start` / `ghs-plan-finalize` so the AI's right-panel todo
+ * transitions seamlessly across the plan-family tools. `plan:designing` is
+ * the snapshot-mode post-advance value too (snapshot handler persists the
+ * context file then re-writes status as `designing` while it waits for the
+ * designer to run), and `plan:reviewing` is the plan-mode post-advance value
+ * (matches the AC #3 explicit setup).
+ */
+const PLAN_STAGES = ["plan:designing", "plan:reviewing", "plan:finalizing"];
+
+/**
+ * The `▶ NEXT ACTION` anchor text used by `ghs-plan-review`'s chrome. The
+ * per-mode dispatch directive already lives inside the body (designer /
+ * reviewer / finalize hand-off); the anchor is the single concise reminder.
+ */
+const NEXT_ACTION_PLAN_REVIEW =
+  "execute the dispatch directive above, then advance to the next `ghs-plan-review` call";
 
 // -----------------------------------------------------------------------------
 // Mode-disambiguation schema (plan §5 risk row).
@@ -723,7 +753,7 @@ export const planReviewTool = tool({
     // Locate the active plan.
     const status = await findActivePlanStatus(projectDir);
     if (status === null) {
-      return [
+      const body = [
         "=== ghs-plan-review ===",
         "",
         `Project directory: ${projectDir}`,
@@ -733,6 +763,14 @@ export const planReviewTool = tool({
         "请先调用 `ghs-plan-start` 启动一个新 plan，再用 Task tool 派发对应 subagent，",
         "然后把 subagent 的分隔标记输出原样传给本 tool 的 snapshot/plan/review 参数。",
       ].join("\n");
+      // No active plan → getStageSignature returns null → no chrome.
+      return composeChrome({
+        ctx,
+        projectDir,
+        toolName: "ghs-plan-review",
+        toolArgs: args,
+        body,
+      });
     }
 
     const mode: PlanReviewMode = validated.snapshot
@@ -748,12 +786,79 @@ export const planReviewTool = tool({
           ? (validated.plan as string)
           : (validated.review as string);
 
+    let body: string;
     if (mode === "snapshot") {
-      return handleSnapshotMode({ projectDir, status, rawText });
+      body = await handleSnapshotMode({ projectDir, status, rawText });
+    } else if (mode === "plan") {
+      body = await handlePlanMode({ projectDir, status, rawText });
+    } else {
+      body = await handleReviewMode({ projectDir, status, rawText });
     }
-    if (mode === "plan") {
-      return handlePlanMode({ projectDir, status, rawText });
-    }
-    return handleReviewMode({ projectDir, status, rawText });
+    // Apply workflow chrome (mechanism-1 injection point ② main path).
+    // Post-advance timing (plan §3.1 时序约束 — 关键): composeChrome invokes
+    // getStageSignature AFTER the mode handler completed its writePlanStatus,
+    // so it observes the post-advance status (e.g. handlePlanMode's just-
+    // written `reviewing`). This is the self-consistency premise for the
+    // staleTodoWarning drift test (AC #3): a prior call established
+    // lastStageSeenByTool='plan:designing' and this call reads
+    // post-advance 'plan:reviewing' → drift → staleTodoWarning.
+    return composeChrome({
+      ctx,
+      projectDir,
+      toolName: "ghs-plan-review",
+      toolArgs: args,
+      body,
+    });
   },
 });
+
+/**
+ * Compose the workflow chrome around an arbitrary body string and call
+ * `ctx.metadata` to set the tool-card title (mechanism-1 injection point ② +
+ * ③ main paths, Feature s1-feat-005).
+ *
+ * When `getStageSignature` returns null (single-step tool, terminal status,
+ * no active plan, or read failure — judgment table row 1) the body is
+ * returned verbatim with no chrome and `ctx.metadata` is NOT called.
+ */
+async function composeChrome(args: {
+  ctx: ToolContext;
+  projectDir: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  body: string;
+}): Promise<string> {
+  const { ctx, projectDir, toolName, toolArgs, body } = args;
+  const stage = await getStageSignature(toolName, projectDir, toolArgs);
+  const staleClass = classifyStaleState(ctx.sessionID, stage);
+
+  if (stage === null) {
+    return body;
+  }
+
+  try {
+    ctx.metadata({
+      title: `[ghs] ${stage}`,
+      metadata: { stage, stale: staleClass },
+    });
+  } catch {
+    // best-effort: visual chrome must never crash the tool result.
+  }
+
+  const header = stageHeader(stage);
+  const currentIdx = Math.max(0, PLAN_STAGES.indexOf(stage));
+  const todoLine =
+    staleClass === "never"
+      ? todoDirective(PLAN_STAGES, currentIdx)
+      : staleClass === "drift"
+        ? staleTodoWarning(stage)
+        : "";
+  const anchor = nextActionAnchor(NEXT_ACTION_PLAN_REVIEW);
+
+  const prefix = `${header}\n\n`;
+  const suffixParts: string[] = [];
+  if (todoLine) suffixParts.push(todoLine);
+  suffixParts.push(anchor);
+  const suffix = `\n\n${suffixParts.join("\n\n")}`;
+  return `${prefix}${body}${suffix}`;
+}

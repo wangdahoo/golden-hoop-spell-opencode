@@ -32,6 +32,10 @@ import {
   type PlanStatus,
 } from "../src/lib/state";
 import { DEFAULT_MIN_LENGTH } from "../src/lib/parse";
+import {
+  recordTodoTick,
+  classifyStaleState,
+} from "../src/lib/todo-tracker";
 
 // -----------------------------------------------------------------------------
 // Fixtures
@@ -77,7 +81,7 @@ function baselineStatus(overrides: Partial<PlanStatus> = {}): PlanStatus {
 }
 
 /** A mock ToolContext whose worktree/directory resolve to the temp project. */
-function mockCtx(projectDir: string) {
+function mockCtx(projectDir: string): Parameters<typeof planReviewTool.execute>[1] {
   return {
     sessionID: "test-session",
     messageID: "test-message",
@@ -88,6 +92,35 @@ function mockCtx(projectDir: string) {
     metadata: () => {},
     ask: async () => {},
   } as Parameters<typeof planReviewTool.execute>[1];
+}
+
+/**
+ * Variant of {@link mockCtx} that pins `sessionID` to the supplied value and
+ * captures every `ctx.metadata` call. Used by the workflow-chrome assertions
+ * (Feature s1-feat-005) to verify the injection-point-③ main path sets
+ * `title: "[ghs] <stage>"`.
+ */
+function mockCtxCaptured(
+  projectDir: string,
+  sessionID: string,
+): {
+  ctx: Parameters<typeof planReviewTool.execute>[1];
+  calls: { title?: string; metadata?: Record<string, unknown> }[];
+} {
+  const calls: { title?: string; metadata?: Record<string, unknown> }[] = [];
+  const ctx = {
+    sessionID,
+    messageID: "plan-review-chrome-message",
+    agent: "plan-review-chrome-agent",
+    directory: projectDir,
+    worktree: projectDir,
+    abort: new AbortController().signal,
+    metadata: (input: { title?: string; metadata?: Record<string, unknown> }) => {
+      calls.push(input);
+    },
+    ask: async () => {},
+  } as Parameters<typeof planReviewTool.execute>[1];
+  return { ctx, calls };
 }
 
 // -----------------------------------------------------------------------------
@@ -432,5 +465,119 @@ describe("active-plan discovery", () => {
     // The approved plan's context file is NOT touched.
     const oldCtx = join(plansDir(tempRoot), approved.context_file);
     expect(await Bun.file(oldCtx).exists()).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Workflow chrome (Feature s1-feat-005) — post-advance drift assertions
+// -----------------------------------------------------------------------------
+//
+// AC #3 (plan §4 Phase 1 post-advance timing): plan-review plan mode on the
+// success path must return text containing `staleTodoWarning` with expected
+// stage `plan:reviewing` (post-advance — handlePlanMode just wrote
+// `status="reviewing"` to status.json). The setup is explicit per the AC:
+//   (a) first call recordTodoTick to set lastTodoMs (else lastTodoMs===
+//       undefined → "never" branch → todoDirective, NOT staleTodoWarning);
+//   (b) then prime lastStageSeenByTool to "plan:designing" as the drift
+//       baseline (else no drift → fresh → no staleTodoWarning).
+// With both in place, handlePlanMode's post-advance write of `reviewing`
+// makes getStageSignature read "plan:reviewing" !== baseline "plan:designing"
+// → row 3 drift → staleTodoWarning("plan:reviewing").
+
+describe("plan-review workflow chrome (s1-feat-005)", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-chrome-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("AC #3 plan mode drift: stageHeader 'plan:reviewing' + staleTodoWarning(post-advance)", async () => {
+    // Active plan in `designing` (the pre-advance state handlePlanMode will
+    // transition away from when it writes `reviewing`).
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // Unique session id so the module-level sessions Map carries no prior
+    // state from other tests in this file.
+    const sid = "pr-chrome-drift-1";
+    // (a) Set lastTodoMs via recordTodoTick — required to escape the "never"
+    //     branch (judgment-table row 2).
+    recordTodoTick(sid);
+    // (b) Prime lastStageSeenByTool to "plan:designing" — the drift baseline.
+    //     classifyStaleState advances lastStageSeenByTool as a side effect.
+    classifyStaleState(sid, "plan:designing");
+
+    const { ctx, calls } = mockCtxCaptured(tempRoot, sid);
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# Drift Test Plan")) },
+      ctx,
+    );
+
+    // (1) Post-advance stageHeader: handlePlanMode wrote `status="reviewing"`
+    //     to disk; getStageSignature ran AFTER that write → "plan:reviewing".
+    //     A pre-advance read would yield "plan:designing" (the input state).
+    expect(result).toContain("--- ghs stage: plan:reviewing ---");
+    // (2) Drift branch fired staleTodoWarning referencing the post-advance
+    //     stage. NOT todoDirective (would be the "never" branch).
+    expect(result).toContain("STALE TODO:");
+    expect(result).toContain("plan:reviewing");
+    expect(result).not.toContain("TODO: call the `todowrite` tool to build");
+    // (3) nextActionAnchor still appended.
+    expect(result).toContain("▶ NEXT ACTION:");
+    // (4) Original body preserved (AC #6 regression — existing assertions
+    //     still hold inside the chrome-wrapped result).
+    expect(result).toContain("Plan 已提取");
+    expect(result).toContain("Mode:              plan");
+    // (5) ctx.metadata called with the post-advance stage title (AC #4).
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0].title).toBe("[ghs] plan:reviewing");
+    expect(calls[0].metadata?.stage).toBe("plan:reviewing");
+    expect(calls[0].metadata?.stale).toBe("drift");
+  });
+
+  test("first plan-review call (no prior tick) → todoDirective, NOT staleTodoWarning", async () => {
+    // Judgment-table row 2: lastTodoMs === undefined → never → todoDirective.
+    // This is the "constructive first nudge" branch — it must NOT fire the
+    // staleTodoWarning (which would be a semantically-inverted "stage already
+    // advanced" warning before any stage has ever been observed).
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const sid = "pr-chrome-never-1";
+    // No recordTodoTick — lastTodoMs is undefined.
+    const { ctx, calls } = mockCtxCaptured(tempRoot, sid);
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# First Call Plan")) },
+      ctx,
+    );
+
+    expect(result).toContain("--- ghs stage: plan:reviewing ---");
+    expect(result).toContain("TODO: call the `todowrite` tool");
+    expect(result).not.toContain("STALE TODO:");
+    expect(result).toContain("▶ NEXT ACTION:");
+    expect(calls[0].title).toBe("[ghs] plan:reviewing");
+    expect(calls[0].metadata?.stale).toBe("never");
+  });
+
+  test("no active plan → judgment-table row 1 → no chrome at all (body verbatim)", async () => {
+    // No status.json seeded → findActivePlanStatus returns null → tool's
+    // "no plan in progress" branch → getStageSignature returns null → no
+    // chrome, no ctx.metadata call.
+    const sid = "pr-chrome-inactive-1";
+    const { ctx, calls } = mockCtxCaptured(tempRoot, sid);
+
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# No Plan")) },
+      ctx,
+    );
+
+    expect(result).toContain("没有进行中的 plan");
+    expect(result).not.toContain("--- ghs stage:");
+    expect(result).not.toContain("TODO: call the `todowrite`");
+    expect(result).not.toContain("STALE TODO:");
+    expect(result).not.toContain("▶ NEXT ACTION:");
+    expect(calls).toHaveLength(0);
   });
 });

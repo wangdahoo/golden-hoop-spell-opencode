@@ -45,6 +45,16 @@ import {
   type PlanStatus,
 } from "../lib/state.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import {
+  stageHeader,
+  todoDirective,
+  nextActionAnchor,
+  staleTodoWarning,
+} from "../lib/workflow-chrome.ts";
+import {
+  getStageSignature,
+  classifyStaleState,
+} from "../lib/todo-tracker.ts";
 
 // -----------------------------------------------------------------------------
 // Slug generation
@@ -58,6 +68,24 @@ import { resolveProjectDir } from "../lib/project.ts";
  * terminal tab + `ls` output.
  */
 const MAX_SLUG_LENGTH = 60;
+
+/**
+ * High-level plan-workflow stages surfaced in the `todoDirective` checklist
+ * (mechanism-1 injection point ②, Feature s1-feat-005). Same labels used by
+ * `ghs-plan-start` so the AI's right-panel todo transitions seamlessly across
+ * the plan-family tools. Note: on plan-finalize's success path the active
+ * plan flips to `approved` (terminal) and `getStageSignature` returns null →
+ * chrome is a no-op (judgment-table row 1) — the checklist labels are still
+ * referenced on the partial-failure path where status remains non-terminal.
+ */
+const PLAN_STAGES = ["plan:designing", "plan:reviewing", "plan:finalizing"];
+
+/**
+ * The `▶ NEXT ACTION` anchor text used by `ghs-plan-finalize`'s chrome.
+ * Single source so the chrome helper and any future ad-hoc text stay aligned.
+ */
+const NEXT_ACTION_PLAN_FINALIZE =
+  "call `ghs-sprint` to break the approved plan into atomic features";
 
 /**
  * Derive a filesystem-safe slug from a plan's text content.
@@ -279,7 +307,7 @@ export const planFinalizeTool = tool({
       // silently abort a finalisation that already wrote the plan file. We
       // surface the error in the result text so the AI/user can diagnose,
       // while the plan artefact itself is safely on disk.
-      return [
+      const partialBody = [
         "=== ghs-plan-finalize PARTIAL ===",
         "",
         `Plan written to: ${planFilePath}`,
@@ -290,6 +318,17 @@ export const planFinalizeTool = tool({
         "The plan artefact is safely on disk, but the dispatcher state was not",
         "flipped to `approved`. Inspect the status file referenced above.",
       ].join("\n");
+      // On the partial-failure path the status file was NOT mutated by us, so
+      // its on-disk `status` field is whatever it was before (typically
+      // `pending_approval` — non-terminal). Post-advance chrome therefore
+      // still applies if there is an active plan.
+      return composeChrome({
+        ctx,
+        projectDir,
+        toolName: "ghs-plan-finalize",
+        toolArgs: args,
+        body: partialBody,
+      });
     }
 
     // (e) Compose the result. Lead with the success marker, the file path, the
@@ -318,9 +357,79 @@ export const planFinalizeTool = tool({
     }
     lines.push("");
     lines.push("Next: invoke ghs-sprint to break this plan into features.");
-    return lines.join("\n");
+    // (f) Apply workflow chrome (mechanism-1 injection point ② main path).
+    // Post-advance timing: getStageSignature is invoked AFTER
+    // markPlanApproved returned. On the success path status is now `approved`
+    // (terminal) → getStageSignature returns null → no chrome (judgment-table
+    // row 1) and the existing "Next: invoke ghs-sprint" hand-off carries the
+    // transition. When no prior status.json existed at all (hand-authored
+    // plan) the read is likewise null. The chrome only fires when there is a
+    // non-terminal active plan left behind by some other condition — which is
+    // exactly the safe default we want.
+    return composeChrome({
+      ctx,
+      projectDir,
+      toolName: "ghs-plan-finalize",
+      toolArgs: args,
+      body: lines.join("\n"),
+    });
   },
 });
+
+/**
+ * Compose the workflow chrome around an arbitrary body string and call
+ * `ctx.metadata` to set the tool-card title (mechanism-1 injection point ② +
+ * ③ main paths, Feature s1-feat-005).
+ *
+ * Post-advance timing (plan §3.1 时序约束 — 关键): the caller MUST invoke
+ * this helper AFTER its own `writePlanStatus` / equivalent state write so
+ * `getStageSignature` reads the post-advance `status` field.
+ *
+ * When `getStageSignature` returns null (single-step tool, terminal status,
+ * no active plan, or read failure — judgment table row 1) the body is
+ * returned verbatim with no chrome and `ctx.metadata` is NOT called.
+ */
+async function composeChrome(args: {
+  ctx: ToolContext;
+  projectDir: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  body: string;
+}): Promise<string> {
+  const { ctx, projectDir, toolName, toolArgs, body } = args;
+  const stage = await getStageSignature(toolName, projectDir, toolArgs);
+  const staleClass = classifyStaleState(ctx.sessionID, stage);
+
+  if (stage === null) {
+    return body;
+  }
+
+  try {
+    ctx.metadata({
+      title: `[ghs] ${stage}`,
+      metadata: { stage, stale: staleClass },
+    });
+  } catch {
+    // best-effort: visual chrome must never crash the tool result.
+  }
+
+  const header = stageHeader(stage);
+  const currentIdx = Math.max(0, PLAN_STAGES.indexOf(stage));
+  const todoLine =
+    staleClass === "never"
+      ? todoDirective(PLAN_STAGES, currentIdx)
+      : staleClass === "drift"
+        ? staleTodoWarning(stage)
+        : "";
+  const anchor = nextActionAnchor(NEXT_ACTION_PLAN_FINALIZE);
+
+  const prefix = `${header}\n\n`;
+  const suffixParts: string[] = [];
+  if (todoLine) suffixParts.push(todoLine);
+  suffixParts.push(anchor);
+  const suffix = `\n\n${suffixParts.join("\n\n")}`;
+  return `${prefix}${body}${suffix}`;
+}
 
 // -----------------------------------------------------------------------------
 // Local helpers re-exported so this module is self-contained for tests that

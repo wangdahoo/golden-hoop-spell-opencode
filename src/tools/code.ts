@@ -41,6 +41,25 @@ import {
   type Feature,
 } from "../lib/scripts/parallel-utils.ts";
 import { FEATURE_IMPL_PROMPT } from "../prompts/feature-impl.ts";
+import {
+  stageHeader,
+  todoDirective,
+  nextActionAnchor,
+  staleTodoWarning,
+} from "../lib/workflow-chrome.ts";
+import {
+  getStageSignature,
+  classifyStaleState,
+} from "../lib/todo-tracker.ts";
+
+/**
+ * The `▶ NEXT ACTION` anchor text used by `ghs-code`'s chrome (mechanism-1
+ * injection point ②, Feature s1-feat-005). The per-mode dispatch text already
+ * names the specific Task / parse-completion-signal / update-feature-status
+ * hand-off; this anchor is the concise reminder.
+ */
+const NEXT_ACTION_CODE =
+  "dispatch the coding subagent(s) via the Task tool, then parse the completion signal and update feature status";
 
 /**
  * Render `FEATURE_IMPL_PROMPT` with its two placeholders substituted.
@@ -240,6 +259,9 @@ export const codeTool = tool({
       return lines.join("\n");
     }
 
+    let body: string;
+    let stages: string[];
+
     // (5) Branch on args.
     //
     // `feature_id` pin (highest priority) → validate + single-feature dispatch.
@@ -249,22 +271,106 @@ export const codeTool = tool({
     const parallelMode = args.parallel === true;
 
     if (args.feature_id) {
-      return dispatchPinnedFeature(
+      body = dispatchPinnedFeature(
         args.feature_id,
         ready,
         skipped,
         projectDir,
         cycleWarning,
       );
+      // Pinned: single-feature checklist (one in_progress item).
+      stages = [`code:${args.feature_id}`];
+    } else if (parallelMode) {
+      body = dispatchParallelPlan(ready, projectDir, cycleWarning);
+      // Parallel: todoDirective's `stages` is the batch's feature ids
+      // (plan §3.1 注入点② — "code 并行场景的 todoDirective 按 batch 展开").
+      // The workflow-chrome signature is the extension point: passing the
+      // flat ready-feature id list expands a batch checklist via the same
+      // code path as the single-feature case.
+      stages = ready.map(
+        (f) => `code:${(f["id"] as string | undefined) ?? "unknown"}`,
+      );
+    } else {
+      body = dispatchSingleFeature(ready[0], projectDir, cycleWarning);
+      const firstId = (ready[0]["id"] as string | undefined) ?? "default";
+      stages = [`code:${firstId}`];
     }
 
-    if (parallelMode) {
-      return dispatchParallelPlan(ready, projectDir, cycleWarning);
-    }
-
-    return dispatchSingleFeature(ready[0], projectDir, cycleWarning);
+    // (6) Apply workflow chrome (mechanism-1 injection point ② main path).
+    // For `ghs-code`, getStageSignature derives the stage purely from args
+    // (code:<feature_id> | code:batch | code:default) and never reads disk,
+    // so the "post-advance" timing constraint is trivially satisfied — the
+    // signature reflects the call shape, not a mutable state machine.
+    return composeChrome({
+      ctx,
+      projectDir,
+      toolName: "ghs-code",
+      toolArgs: args,
+      stages,
+      body,
+    });
   },
 });
+
+/**
+ * Compose the workflow chrome around an arbitrary body string and call
+ * `ctx.metadata` to set the tool-card title (mechanism-1 injection point ② +
+ * ③ main paths, Feature s1-feat-005).
+ *
+ * For `ghs-code`, `getStageSignature` always returns a non-null `code:*`
+ * signature (the tool is stage-tracked by args shape, not disk state), so
+ * the null branch is only hit when args somehow lack both `feature_id` and
+ * `parallel` (extreme edge case) — and even then it returns `code:default`.
+ * The defensive null handling is kept for symmetry with the other tools.
+ */
+async function composeChrome(args: {
+  ctx: ToolContext;
+  projectDir: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  stages: string[];
+  body: string;
+}): Promise<string> {
+  const { ctx, projectDir, toolName, toolArgs, stages, body } = args;
+  const stage = await getStageSignature(toolName, projectDir, toolArgs);
+  const staleClass = classifyStaleState(ctx.sessionID, stage);
+
+  if (stage === null) {
+    return body;
+  }
+
+  try {
+    ctx.metadata({
+      title: `[ghs] ${stage}`,
+      metadata: { stage, stale: staleClass },
+    });
+  } catch {
+    // best-effort: visual chrome must never crash the tool result.
+  }
+
+  const header = stageHeader(stage);
+  // For code's stages list, `currentIdx` is 0 when the dispatch is for a
+  // single feature OR when this is the first item of a parallel batch. The
+  // caller may pass a multi-item `stages` list (parallel-batch expansion);
+  // we mark the head as in_progress and the rest as pending — a reasonable
+  // approximation of "concurrent dispatch" within the single-in_progress
+  // constraint of the todoDirective signature.
+  const currentIdx = 0;
+  const todoLine =
+    staleClass === "never"
+      ? todoDirective(stages, currentIdx)
+      : staleClass === "drift"
+        ? staleTodoWarning(stage)
+        : "";
+  const anchor = nextActionAnchor(NEXT_ACTION_CODE);
+
+  const prefix = `${header}\n\n`;
+  const suffixParts: string[] = [];
+  if (todoLine) suffixParts.push(todoLine);
+  suffixParts.push(anchor);
+  const suffix = `\n\n${suffixParts.join("\n\n")}`;
+  return `${prefix}${body}${suffix}`;
+}
 
 /**
  * Build the dispatch text for a single pinned feature.
