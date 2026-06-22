@@ -229,3 +229,9 @@ $RECYCLE.BIN/
 # ignored (per-user project state).
 !test/fixtures/.ghs/
 !test/fixtures/.ghs/**
+
+
+.opencode/
+
+# codegraph MCP runtime index (db / socket / pid / logs)
+.codegraph/
