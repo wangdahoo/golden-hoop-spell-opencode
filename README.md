@@ -114,7 +114,7 @@ npm install golden-hoop-spell-opencode
 在 OpenCode 会话中，按以下顺序驱动插件（每步工具返回末尾的 `▶ NEXT ACTION` 锚点会告诉你下一步）：
 
 ```
-1. /ghs-init          → 初始化 .ghs/ 目录结构与 subagent 文件
+1. ghs-init           → 初始化 .ghs/ 目录结构与 subagent 文件
 2. ghs-config         → 渲染 agent markdown（通常 init 已自动完成，改模型后需重跑）
 3. ghs-plan-start     → 启动三角色计划调度（派发 context-haiku subagent）
 4. ghs-plan-review    → 三模式循环：snapshot → plan → review（含多轮修订）
@@ -132,21 +132,21 @@ npm install golden-hoop-spell-opencode
 ## 工作流总览
 
 ```
-┌─────────┐   ┌───────────┐   ┌──────────────────────────────────┐   ┌──────────┐
-│ ghs-init│──▶│ ghs-config│──▶│  三角色计划调度器                  │──▶│ ghs-sprint│
-└─────────┘   └───────────┘   │  plan-start → plan-review →       │   └────┬─────┘
-                              │  plan-finalize                    │        │
-                              └──────────────────────────────────┘        ▼
-                                                                  ┌──────────┐
-                                                                  │ ghs-code │ (逐 feature / 并行批次)
-                                                                  └────┬─────┘
-                                                                       │
-                                  ┌────────────────────────────────────┼─────────────┐
-                                  ▼                                    ▼             ▼
-                          ┌──────────────┐                  ┌──────────────┐  ┌────────────────┐
-                          │ ghs-status   │                  │ ghs-archive  │  │ ghs-force-archive│
-                          │ (只读,随时)  │                  │ (已完成sprint)│  │ (强制归档全部) │
-                          └──────────────┘                  └──────────────┘  └────────────────┘
+┌──────────┐   ┌────────────┐   ┌──────────────────────────────────────┐   ┌────────────┐
+│ ghs-init │──▶│ ghs-config │──▶│ 3-Role Plan Dispatcher               │──▶│ ghs-sprint │
+└──────────┘   └────────────┘   │ plan-start → plan-review →           │   └─────┬──────┘
+                                │ plan-finalize                        │         │
+                                └──────────────────────────────────────┘         ▼
+                                                                           ┌──────────┐
+                                                                           │ ghs-code │ (per-feature / parallel)
+                                                                           └─────┬────┘
+                                                                                 │
+                                                ┌────────────────────────────────┼────────────────────────┐
+                                                ▼                                ▼                        ▼
+                                        ┌──────────────┐                 ┌──────────────┐       ┌───────────────────┐
+                                        │ ghs-status   │                 │ ghs-archive  │       │ ghs-force-archive │
+                                        │ (read-only)  │                 │ (completed)  │       │ (force all)       │
+                                        └──────────────┘                 └──────────────┘       └───────────────────┘
 ```
 
 **阶段状态持久化在 `.ghs/` 目录**：
