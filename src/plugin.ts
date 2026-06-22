@@ -38,6 +38,21 @@ import { planReviewTool } from "./tools/plan-review.ts";
 import { planFinalizeTool } from "./tools/plan-finalize.ts";
 import { codeTool } from "./tools/code.ts";
 import { GHS_COMMANDS } from "./lib/commands.ts";
+import { recordTodoTick } from "./lib/todo-tracker.ts";
+
+// -----------------------------------------------------------------------------
+// Default session key for the disconnect-detection Map (plan §3.1 注入点①).
+// -----------------------------------------------------------------------------
+//
+// The opencode `event` hook input is `{ event: Event }` — there is no
+// top-level sessionID on the hook input itself (unlike `chat.message` /
+// `tool.execute.after` which carry `sessionID` directly). For `todo.updated`
+// specifically the session id is nested at `event.properties.sessionID`, so
+// after the narrowing guard we extract it from there; this default constant is
+// only used as a defensive fallback if properties is unexpectedly absent (R8
+// belt-and-suspenders — the type system says it's always present, but the
+// guard already trades strictness for runtime safety).
+const DEFAULT_SESSION_ID = "_default";
 
 /**
  * Single-line hint pushed into the AI's system prompt on every chat. Lists
@@ -57,7 +72,14 @@ const SYSTEM_HINT_TEXT =
   "Tools implemented: ghs-init, ghs-config, ghs-plan-start, ghs-plan-review, ghs-plan-finalize, ghs-sprint, ghs-code, ghs-status, ghs-archive, ghs-force-archive. " +
   "Workflow order: ghs-init → ghs-config → ghs-plan-start → ghs-plan-review → ghs-plan-finalize → ghs-sprint → ghs-code → ghs-status → ghs-archive. " +
   "Model IDs for the 3 plan-dispatcher subagents are user-configurable via `.ghs/ghs.json`; after editing run `ghs-config` then restart OpenCode. " +
-  "Slash commands /ghs-init, /ghs-config, /ghs-plan-start, /ghs-sprint, /ghs-code, /ghs-status, /ghs-archive, /ghs-force-archive are auto-registered on startup.";
+  "Slash commands /ghs-init, /ghs-config, /ghs-plan-start, /ghs-sprint, /ghs-code, /ghs-status, /ghs-archive, /ghs-force-archive are auto-registered on startup. " +
+  // --- Todo Discipline (plan §3.1 注入点①) -----------------------------------
+  // Nudges the main AI to drive the right-side TODO panel via the built-in
+  // `todowrite` tool — the ONLY thing that can render to that panel (C1).
+  // Without this, the panel stays empty and the disconnect-detection signals
+  // (todo.updated events) never fire, making mechanism one blind. This is a
+  // best-effort nudge, not a program-level enforcement.
+  "Todo Discipline: when entering a ghs multi-step workflow (plan / sprint / code), call the built-in `todowrite` tool to build a stage checklist and keep it in sync as stages advance — every stage transition marks the prior stage `completed` and the current one `in_progress`. The `▶ NEXT ACTION` anchor at the end of each tool response is mandatory: execute it via the named tool call, do NOT skip ahead or take over the next step yourself. This keeps the right-side TODO panel accurate and lets the disconnect-detection state machine observe your progress.";
 
 /**
  * The ghs OpenCode plugin. Default-exported from `src/index.ts`.
@@ -83,6 +105,37 @@ export const ghsPlugin: Plugin = async () => ({
   config: async (cfg) => {
     cfg.command ??= {};
     Object.assign(cfg.command, GHS_COMMANDS);
+  },
+  // --- event hook (plan §3.1 注入点①) ---------------------------------------
+  // Feeds `todo.updated` ticks into the disconnect-detection Map maintained
+  // by `src/lib/todo-tracker.ts`. This is the ONLY way the plugin can observe
+  // right-side TODO panel activity — there is no read-todo API on the Hooks
+  // surface, so the `todo.updated` event is the sole旁路 signal (plan §3.1).
+  //
+  // Defensive discriminator guard (plan §3.1 / R8): the `Event` union
+  // (~32 members in types.gen.d.ts:602) is *expected* to carry a `type`
+  // literal on every member, but a missing field would throw
+  // `undefined.type` without this guard. The `("type" in input.event)`
+  // short-circuit makes access safe regardless of the runtime shape; the
+  // `test/event-discriminator.test.ts` suite additionally verifies union
+  // completeness (every member has a `type` literal at compile time +
+  // a matching runtime sample).
+  //
+  // sessionID source: the event hook input is `{ event: Event }` with no
+  // top-level sessionID; after narrowing to EventTodoUpdated the sessionID
+  // lives at `event.properties.sessionID`, which we read there. If
+  // properties is unexpectedly absent we fall back to DEFAULT_SESSION_ID so
+  // tracking degrades gracefully rather than throwing.
+  event: async (input) => {
+    if ("type" in input.event && input.event.type === "todo.updated") {
+      const props = (input.event as { properties?: { sessionID?: string } })
+        .properties;
+      const sessionID =
+        props && typeof props.sessionID === "string"
+          ? props.sessionID
+          : DEFAULT_SESSION_ID;
+      recordTodoTick(sessionID);
+    }
   },
   "experimental.chat.system.transform": async (_input, output) => {
     output.system.push(SYSTEM_HINT_TEXT);

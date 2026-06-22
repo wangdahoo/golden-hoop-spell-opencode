@@ -107,3 +107,65 @@ describe("plugin config hook injects commands", () => {
     expect(cfg.command).toEqual(afterFirst);
   });
 });
+
+describe("plugin SYSTEM_HINT regression (s1-feat-003)", () => {
+  /**
+   * The `experimental.chat.system.transform` hook pushes SYSTEM_HINT_TEXT into
+   * the system prompt. s1-feat-003 appends a "Todo Discipline" segment to that
+   * text; this test verifies BOTH the new segment AND the pre-existing tool
+   * list / workflow order survived the edit (AC #1 + AC #5).
+   *
+   * SYSTEM_HINT_TEXT itself is module-private in plugin.ts, so the hint is
+   * observed via its only external effect: the string landing in
+   * `output.system` after the transform hook runs.
+   */
+  async function collectHint(): Promise<string> {
+    const hooks = await ghsPlugin({} as never);
+    expect(hooks["experimental.chat.system.transform"]).toBeDefined();
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]!(
+      { sessionID: "s", model: {} as never } as never,
+      output as never,
+    );
+    // The hook pushes exactly one string; collapse to that.
+    return output.system.join("\n");
+  }
+
+  test("SYSTEM_HINT still lists all 10 tool names", async () => {
+    const hint = await collectHint();
+    for (const name of [
+      "ghs-init",
+      "ghs-config",
+      "ghs-plan-start",
+      "ghs-plan-review",
+      "ghs-plan-finalize",
+      "ghs-sprint",
+      "ghs-code",
+      "ghs-status",
+      "ghs-archive",
+      "ghs-force-archive",
+    ]) {
+      expect(hint).toContain(name);
+    }
+  });
+
+  test("SYSTEM_HINT still documents the workflow order", async () => {
+    const hint = await collectHint();
+    expect(hint).toContain("ghs-init");
+    expect(hint).toContain("ghs-archive");
+    // Workflow-order chain fragment survives.
+    expect(hint).toContain("ghs-plan-start");
+    expect(hint).toContain("ghs-plan-finalize");
+  });
+
+  test("SYSTEM_HINT contains the new Todo Discipline segment", async () => {
+    const hint = await collectHint();
+    expect(hint).toContain("Todo Discipline");
+    // The segment must nudge the main AI to call the built-in todowrite tool.
+    expect(hint).toContain("todowrite");
+    // And to honor the ▶ NEXT ACTION anchor rather than skipping ahead.
+    expect(hint).toContain("▶ NEXT ACTION");
+    expect(hint).toMatch(/in_progress/);
+    expect(hint).toMatch(/completed/);
+  });
+});
