@@ -38,7 +38,7 @@ import { planReviewTool } from "./tools/plan-review.ts";
 import { planFinalizeTool } from "./tools/plan-finalize.ts";
 import { codeTool } from "./tools/code.ts";
 import { GHS_COMMANDS } from "./lib/commands.ts";
-import { recordTodoTick } from "./lib/todo-tracker.ts";
+import { recordTodoTick, getStageSignature } from "./lib/todo-tracker.ts";
 
 // -----------------------------------------------------------------------------
 // Default session key for the disconnect-detection Map (plan §3.1 注入点①).
@@ -136,6 +136,56 @@ export const ghsPlugin: Plugin = async () => ({
           : DEFAULT_SESSION_ID;
       recordTodoTick(sessionID);
     }
+  },
+  // --- tool.execute.after hook (plan §3.1 注入点③ 兜底 / channel B) ----------
+  // Best-effort tool-card stage annotation. The MAIN path (channel A) is
+  // `ctx.metadata()` inside each ghs tool's execute (feat-005); this hook is
+  // the FALLBACK that runs after execute returns. Channel B is decoupled from
+  // channel A (plan §3.1): if either fails the other is unaffected, and this
+  // hook must never throw into the tool-result pipeline.
+  //
+  // R4 gate (first line): non-ghs tools are returned immediately — no-op. The
+  // hook MUST NOT pollute other plugins' / built-in tool cards (todowrite /
+  // read / bash / etc.). The `test/plugin-hook.test.ts` suite enforces this
+  // with a sample of non-ghs tools.
+  //
+  // Stage derivation reuses `getStageSignature` (feat-002). It returns null
+  // for single-step ghs tools (init/config/sprint/status/archive), terminal
+  // plan states, or any status.json read failure (R7) — in all those cases we
+  // skip annotation (no meaningful stage to show) and leave output untouched.
+  //
+  // Decoupling from channel A: we deliberately do NOT call classifyStaleState
+  // here. The main path already called it (advancing lastStageSeenByTool); a
+  // second call would double-advance the disconnect-detection state machine.
+  // This hook only sets the visual title + a minimal metadata blob marking
+  // its source — it is a visual fallback, not a second classification pass.
+  //
+  // projectDir: the hook input carries `{ tool, sessionID, callID, args }`
+  // with NO project context (unlike ToolContext). `process.cwd()` is the only
+  // available signal — acceptable for a best-effort fallback because
+  // getStageSignature already degrades to null on any read failure (R7), so a
+  // wrong cwd simply yields "skip" rather than a crash. (AGENTS.md's
+  // "never process.cwd()" rule is about PLUGIN ROOT / asset resolution, not
+  // the project dir.)
+  "tool.execute.after": async (input, output) => {
+    // R4 gate — MUST be the first statement.
+    if (!input.tool.startsWith("ghs-")) return;
+
+    let stage: string | null = null;
+    try {
+      stage = await getStageSignature(
+        input.tool,
+        process.cwd(),
+        (input.args ?? {}) as Record<string, unknown>,
+      );
+    } catch {
+      // R7: status.json read failure → skip annotation, do not propagate.
+      return;
+    }
+    if (stage === null) return;
+
+    output.title = `[ghs] ${stage}`;
+    output.metadata = { ghsStage: stage, source: "tool.execute.after" };
   },
   "experimental.chat.system.transform": async (_input, output) => {
     output.system.push(SYSTEM_HINT_TEXT);
