@@ -56,7 +56,7 @@ export const PLAN_COMPLETION_SIGNAL = "PLAN DESIGN COMPLETE";
 export const REVIEW_COMPLETION_SIGNAL = "PLAN REVIEW COMPLETE";
 
 /**
- * Completion-signal line the `ghs-context-haiku` subagent prints when it
+ * Completion-signal line the `ghs-context-explorer` subagent prints when it
  * finishes emitting the architecture snapshot.
  */
 export const CONTEXT_SNAPSHOT_COMPLETION_SIGNAL = "CONTEXT SNAPSHOT COMPLETE";
@@ -122,13 +122,13 @@ export function parseReview(
 }
 
 /**
- * Parse a `ghs-context-haiku` subagent response.
+ * Parse a `ghs-context-explorer` subagent response.
  *
  * Pre-configures the `kind: "context_snapshot"` delimiter family
  * (`<<<CONTEXT_SNAPSHOT_START>>>` / `<<<CONTEXT_SNAPSHOT_END>>>`) and the
  * `CONTEXT SNAPSHOT COMPLETE` completion signal.
  *
- * @param text       - raw response from the `ghs-context-haiku` subagent.
+ * @param text       - raw response from the `ghs-context-explorer` subagent.
  * @param overrides  - optional per-call overrides.
  */
 export function parseContextSnapshot(

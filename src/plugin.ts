@@ -58,7 +58,7 @@ const DEFAULT_SESSION_ID = "_default";
  * Single-line hint pushed into the AI's system prompt on every chat. Lists
  * all 10 implemented tool names, the workflow order, the model-config entry
  * point, and a pointer to the `ghs` skill (plan §3.3 机制三). The
- * plan-dispatcher subagents (ghs-context-haiku / ghs-plan-designer /
+ * plan-dispatcher subagents (ghs-context-explorer / ghs-plan-designer /
  * ghs-plan-reviewer) are invoked by the plan tools via the Task tool;
  * ghs-code's coding subagent is dispatched the same way after ghs-code
  * returns its feature-impl prompt.

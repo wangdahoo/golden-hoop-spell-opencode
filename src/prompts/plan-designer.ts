@@ -33,7 +33,7 @@ export const PLAN_DESIGNER_PROMPT = `接下来请用 Task tool 派发 \`ghs-plan
 
 输入给 subagent（拼在 Task 派发的 prompt 里）：
 - 需求描述（用户原始需求 + 任何已澄清的约束）
-- context snapshot 路径或全文（上一轮 ghs-context-haiku 的产物）
+- context snapshot 路径或全文（上一轮 ghs-context-explorer 的产物）
 
 工作方式（务必让 subagent 遵守）：
 - 先读 context snapshot，再按需补读个别源文件；snapshot 已覆盖架构概览/模块职责/数据模型时不要再全文复读
@@ -105,7 +105,7 @@ export const PLAN_DESIGNER_PROMPT_BUILTIN = `Next, dispatch the BUILT-IN \`plan\
 
 Input to feed the agent (concatenate into the Task dispatch prompt):
 - Requirement description (user's original requirement + any clarified constraints)
-- Context snapshot path or full text (produced by the previous ghs-context-haiku run)
+- Context snapshot path or full text (produced by the previous ghs-context-explorer run)
 
 Working approach (ensure the agent follows):
 - Read the context snapshot first, then selectively read individual source files only as needed; do not re-read entire files when the snapshot already covers architecture overview / module responsibilities / data model

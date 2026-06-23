@@ -1,19 +1,19 @@
-// LLM-facing dispatch instruction for the `ghs-context-haiku` subagent —
+// LLM-facing dispatch instruction for the `ghs-context-explorer` subagent —
 // GREP FALLBACK path.
 //
 // `ghs-plan-start` (s3-feat-006) probes `detectCodegraph(projectDir)`
 // (s3-feat-002). When `.codegraph/` is ABSENT (or the probe fails
 // defensively), the dispatcher selects THIS prompt: it tells the main AI to
-// dispatch `ghs-context-haiku` via the Task tool with grep/glob/read-first
+// dispatch `ghs-context-explorer` via the Task tool with grep/glob/read-first
 // instructions. There are no codegraph MCP tools available, so the subagent
 // builds the snapshot by manual traversal — dependency manifest → directory
 // tree → entry point → config → requirement-relevant files.
 //
 // This constant is the dispatch directive the main chat AI reads from the
 // `ghs-plan-start` tool result (plan §3.5 / §3.7 step: Task:
-// ghs-context-haiku). It is NOT the verbatim prompt body baked into the
+// ghs-context-explorer). It is NOT the verbatim prompt body baked into the
 // subagent template (that lives in
-// `shared/agents/ghs-context-haiku.md.template`, s3-feat-001) — it is the
+// `shared/agents/ghs-context-explorer.md.template`, s3-feat-001) — it is the
 // tighter, command-style steering text consumed in the tool result.
 //
 // The snapshot output is wrapped in the
@@ -25,7 +25,7 @@
 // identifiers / field names / delimiter tokens stay English.
 
 /**
- * Dispatch instruction for the context-haiku subagent when codegraph is NOT
+ * Dispatch instruction for the context-explorer subagent when codegraph is NOT
  * available.
  *
  * Returned by `ghs-plan-start` when `detectCodegraph()` returns `false`. It

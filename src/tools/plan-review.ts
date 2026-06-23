@@ -4,7 +4,7 @@
 // (plan §3.5 / §3.7 / §3.4 D1):
 //
 //     ghs-plan-start
-//       → [Task: ghs-context-haiku] → ghs-plan-review(snapshot)
+//       → [Task: ghs-context-explorer] → ghs-plan-review(snapshot)
 //       → [Task: ghs-plan-designer] → ghs-plan-review(plan)
 //       → [Task: ghs-plan-reviewer] → ghs-plan-review(review)
 //       → ghs-plan-finalize
@@ -124,7 +124,7 @@ export const planReviewArgsSchema = z
         message:
           "Exactly one of `snapshot`, `plan`, or `review` must be non-empty " +
           "(all three are empty). Pass the raw subagent response for the mode " +
-          "you are advancing: snapshot from ghs-context-haiku, plan from " +
+          "you are advancing: snapshot from ghs-context-explorer, plan from " +
           "ghs-plan-designer, review from ghs-plan-reviewer.",
       });
     } else if (present.length > 1) {
@@ -422,7 +422,7 @@ async function resolveDesignerDispatch(projectDir: string): Promise<{
 }
 
 /**
- * Snapshot mode — parse the context-haiku subagent's response, persist the
+ * Snapshot mode — parse the context-explorer subagent's response, persist the
  * snapshot, and return the dispatch instruction for the plan-designer.
  *
  * State transition: `status` → `designing` (the snapshot is now available
@@ -812,7 +812,7 @@ export const planReviewTool = tool({
   description:
     "Core loop of the 3-role plan dispatcher (ghs-plan-start → review × N → finalize). " +
     "Three modes, selected by which payload arg is non-empty: " +
-    "`snapshot` (parse ghs-context-haiku output → dispatch ghs-plan-designer), " +
+    "`snapshot` (parse ghs-context-explorer output → dispatch ghs-plan-designer), " +
     "`plan` (parse ghs-plan-designer output → dispatch ghs-plan-reviewer), " +
     "`review` (parse ghs-plan-reviewer output → PASS advances to ghs-plan-finalize, " +
     "FAIL triggers a revise round with max-rounds + breach caps). " +
@@ -823,7 +823,7 @@ export const planReviewTool = tool({
       .string()
       .optional()
       .describe(
-        "Raw response from the ghs-context-haiku subagent (snapshot mode). " +
+        "Raw response from the ghs-context-explorer subagent (snapshot mode). " +
           "Must include the <<<CONTEXT_SNAPSHOT_START>>>/<<<CONTEXT_SNAPSHOT_END>>> delimiters.",
       ),
     plan: tool.schema

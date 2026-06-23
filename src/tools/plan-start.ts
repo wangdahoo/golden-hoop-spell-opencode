@@ -20,7 +20,7 @@
 //   4. writes the initial status.json (round 1, status `designing`,
 //      codegraph_available = probe result),
 //   5. returns an LLM-facing dispatch directive telling the main chat AI to
-//      spawn the `ghs-context-haiku` subagent via the Task tool, and then —
+//      spawn the `ghs-context-explorer` subagent via the Task tool, and then —
 //      once the snapshot is back — to feed it to `ghs-plan-review(snapshot)`.
 //
 // The dispatch directive carries the codegraph-vs-grep prompt inline so the AI
@@ -145,7 +145,7 @@ export const planStartTool = tool({
     "Resolves the project dir, probes whether `.codegraph/` is initialised (R1 runtime detection), " +
     "writes the initial `.ghs/plans/<plan_id>-status.json` (plan_id = `{YYYY-MM-DD}-{slug}`, " +
     "where the slug is derived from the optional `slug_seed`) carrying `codegraph_available`, " +
-    "and returns a Task-tool dispatch directive telling the AI to spawn the `ghs-context-haiku` " +
+    "and returns a Task-tool dispatch directive telling the AI to spawn the `ghs-context-explorer` " +
     "subagent to collect an architecture snapshot (codegraph-aware or grep-fallback prompt) " +
     "and then feed the result to `ghs-plan-review(snapshot)`.",
   args: {
@@ -162,7 +162,7 @@ export const planStartTool = tool({
         "English ASCII kebab-case slug derived by the caller from the user's requirement " +
           "description (e.g. \"a todo app\" → \"todo-app\"). Sanitised into the `<slug>` half " +
           "of the plan_id (`{YYYY-MM-DD}-{slug}`). The raw requirement stays in chat context " +
-          "(fed to the context-haiku subagent) — do NOT pass the verbatim requirement here, " +
+          "(fed to the context-explorer subagent) — do NOT pass the verbatim requirement here, " +
           "since CJK / mixed-script text collapses to an unhelpful slug under sanitisation. " +
           "Empty / missing → falls back to the stable `plan` stem (backward-compatible).",
       ),
@@ -186,7 +186,7 @@ export const planStartTool = tool({
     // English ASCII kebab-case slug the caller derives from the user's
     // requirement description — e.g. "a todo app" → "todo-app"). We do NOT
     // take the raw requirement itself: the dispatcher keeps that in chat
-    // context (passed verbatim to the context-haiku subagent via the Task
+    // context (passed verbatim to the context-explorer subagent via the Task
     // tool), and CJK / mixed-script requirements would collapse to an
     // unhelpful slug under slugify. An empty / missing `slug_seed` falls back
     // to the stable `plan` stem (backward-compatible with older callers /
@@ -241,7 +241,7 @@ export const planStartTool = tool({
 
     // (5) Select the context-collection dispatch directive based on the probe.
     // Both prompts are command-style LLM-facing text (中文 prose + English
-    // identifiers) that tell the AI exactly how to spawn `ghs-context-haiku`
+    // identifiers) that tell the AI exactly how to spawn `ghs-context-explorer`
     // via the Task tool and what delimiter contract to enforce — they live in
     // `src/prompts/context-{codegraph,grep}.ts`.
     const contextPrompt = codegraphAvailable
@@ -266,11 +266,11 @@ export const planStartTool = tool({
     );
     lines.push("");
     lines.push(
-      "Next step: dispatch the context-haiku subagent (directive below), then call",
+      "Next step: dispatch the context-explorer subagent (directive below), then call",
     );
     lines.push("`ghs-plan-review(snapshot=...)` with its delimited output.");
     lines.push("");
-    lines.push("--- context-haiku dispatch directive ---");
+    lines.push("--- context-explorer dispatch directive ---");
     lines.push(contextPrompt);
     // (7) Apply workflow chrome (mechanism-1 injection point ② main path).
     // Post-advance timing: getStageSignature is invoked AFTER writePlanStatus
@@ -364,4 +364,4 @@ async function composeChrome(args: {
  * the chrome helper and any future ad-hoc text stay aligned.
  */
 const NEXT_ACTION_PLAN_START =
-  "dispatch the `ghs-context-haiku` subagent via the Task tool, then call `ghs-plan-review(snapshot=...)` with its delimited output";
+  "dispatch the `ghs-context-explorer` subagent via the Task tool, then call `ghs-plan-review(snapshot=...)` with its delimited output";

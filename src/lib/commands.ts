@@ -63,7 +63,7 @@ export const GHS_COMMANDS: Record<string, GhCommand> = {
       "from that requirement (e.g. \"帮我设计一个 TODO APP\" → \"todo-app\", " +
       "\"add OAuth login\" → \"oauth-login\") and pass it as `slug_seed`. " +
       "Keep the original requirement description in chat context — it will be " +
-      "fed verbatim to the context-haiku / plan-designer / plan-reviewer " +
+      "fed verbatim to the context-explorer / plan-designer / plan-reviewer " +
       "subagents in subsequent steps, so do NOT pass the raw requirement as " +
       "`slug_seed` (CJK / mixed-script collapses to an unhelpful slug). " +
       "If $ARGUMENTS is empty, ask the user for the requirement before " +
