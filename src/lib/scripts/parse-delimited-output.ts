@@ -10,9 +10,11 @@
 //     OpenCode plugin consumes this as an in-process TS module, not a
 //     subprocess. The plan-dispatcher tools (`ghs-plan-review` etc.) call
 //     `parseDelimitedOutput()` directly.
-//   - The 4-strategy cascade (exact_delimiter → normalized_delimiter →
-//     code_fence → whole_body) and the empty-vs-malformed distinction are
-//     preserved exactly.
+//   - The strategy cascade (exact_delimiter → normalized_delimiter →
+//     code_fence → open_ended → whole_body) and the empty-vs-malformed
+//     distinction are preserved. `open_ended` is a port-layer addition
+//     (plan §Phase 1) for truncated-output recovery not present in the
+//     Python source; the other four mirror Python 1:1.
 //   - Regex port hazards (plan §5 risk row "JS 正则与 Python re 的细微差异"):
 //       * Python inline flag group `(?i:_?START)` has no JS equivalent.
 //         We approximate by compiling the whole token pattern with the `/i`
@@ -101,6 +103,7 @@ export type ParseStrategy =
   | "exact_delimiter"
   | "normalized_delimiter"
   | "code_fence"
+  | "open_ended"
   | "whole_body"
   | "none";
 
@@ -382,6 +385,63 @@ function strategyCodeFence(
 }
 
 /**
+ * STRATEGY 3.5 (open_ended): truncated-output recovery.
+ *
+ * When the raw text contains a START delimiter but no END delimiter, the
+ * upstream subagent output was almost certainly truncated mid-stream (the
+ * display layer clipped the tail). Rather than discard the partial content
+ * as `malformed`, this strategy extracts from just after START to EOF and
+ * flags it via a warning. The orchestrator classifies the result as
+ * `fallback_used` (not `ok`) so downstream consumers know the extraction is
+ * not exact.
+ *
+ * Boundary rules:
+ *   - No START present → return `[null, warnings]` (fall through).
+ *   - START and END both present (paired) → return `[null, warnings]`.
+ *     Exact-delimiter (STRATEGY 1) already wins in this case; open_ended
+ *     deliberately declines so it never masks a clean paired extraction.
+ *   - START present, END absent → extract `START..EOF`, push the
+ *     `"open_ended: END missing, extracted START..EOF"` warning, return
+ *     `[content, warnings]`.
+ */
+function strategyOpenEnded(
+  text: string,
+  startToken: string,
+  endToken: string,
+): StrategyResult {
+  const warnings: string[] = [];
+  const startIdx = text.indexOf(startToken);
+  if (startIdx === -1) {
+    return [null, warnings];
+  }
+  const contentStart = startIdx + startToken.length;
+  const endIdx = text.indexOf(endToken, contentStart);
+  if (endIdx !== -1) {
+    // Paired delimiters — exact_delimiter already handled it; decline here.
+    return [null, warnings];
+  }
+  const content = text.slice(contentStart);
+  warnings.push("open_ended: END missing, extracted START..EOF");
+  return [content, warnings];
+}
+
+/**
+ * Pure heuristic: does `rawText` look truncated w.r.t. the delimiter pair?
+ *
+ * Returns `true` iff the START token is present but the END token is absent.
+ * Used by plan-review's retry/success path (Phase 2) to decide whether to
+ * surface a "read the saved tool-output file" recovery nudge. Pure — no
+ * side effects, no I/O — so it is trivially unit-testable.
+ */
+export function looksTruncated(
+  rawText: string,
+  startToken: string,
+  endToken: string,
+): boolean {
+  return rawText.includes(startToken) && !rawText.includes(endToken);
+}
+
+/**
  * STRATEGY 4: take the whole body after stripping thinking / signal / extras.
  *
  * Port of `_strategy_whole_body`. Returns `null` when nothing usable is left
@@ -460,6 +520,10 @@ export function parseRaw(rawText: string, opts: ParseRawOptions): ParseResult {
   strategies.push([
     "code_fence",
     () => strategyCodeFence(rawText, startToken, endToken),
+  ]);
+  strategies.push([
+    "open_ended",
+    () => strategyOpenEnded(rawText, startToken, endToken),
   ]);
   strategies.push([
     "whole_body",
