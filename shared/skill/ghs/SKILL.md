@@ -111,6 +111,23 @@ context, or a tool response you cannot reconcile):
 Never guess the stage; never restart the workflow from `ghs-init` on an
 already-initialised project (it will refuse without `force: true`).
 
+## File Transport (staging files)
+
+The `ghs-plan-*` dispatch directives instruct each subagent (context-explorer
+/ plan-designer / plan-reviewer) to **Write its full delimited output to a
+deterministic staging file** under `.ghs/plans/` and return only a short
+completion signal. This bypasses the Task tool's return channel, which
+truncates long output and corrupts the plan loop (missing `<<<PLAN_END>>>` /
+verdict line → wasted rounds). `ghs-plan-review` reads the staging file as
+the primary parse source; the inline payload (full text pasted into the
+`snapshot`/`plan`/`review` arg) is a byte-stable fallback.
+
+Staging paths: `.ghs/plans/<plan_id>.{snapshot,plan,review}.raw.md`. When you
+dispatch a subagent, pass the staging path the directive gives you; when you
+call `ghs-plan-review`, a short mode-indicator payload (e.g. the completion
+signal) is sufficient. See the per-role "File Transport" sections in the
+reference docs.
+
 ## Reading List (when a stage is unfamiliar)
 
 - `shared/references/coding-agent.md` — the single-feature and parallel-mode

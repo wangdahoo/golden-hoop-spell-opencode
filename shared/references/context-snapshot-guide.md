@@ -86,6 +86,16 @@ Only include code excerpts that could **possibly relate to the requirement**. Fo
 4. Test files (mention their existence and framework only)
 5. Generated files (build output, lock files)
 
+### Large-Input Handling
+
+When a requirement points you at a **very large file** (e.g. a multi-hundred-KB session log, a big data dump, or a generated report) — anything over ~100 KB — do **not** read it end-to-end and never paste its contents into the snapshot. Large inputs inflate every downstream subagent prompt and dominate the token budget. Instead:
+
+1. **Size-check first**: `wc -c` / `wc -l` the file. If it is large, treat it as a *source to mine*, not a *document to reproduce*.
+2. **Sample + locate**: read the head (structure/headers) and use `grep`/search to locate the sections relevant to the requirement (error signatures, key transitions, summary lines). Skip the rest.
+3. **Summarise findings**: capture *what the large input shows about the requirement* (a few sentences + the specific line ranges / counts that matter), not the input itself. A referenced 728 KB session log should become a ~10-line "what happened" digest in the snapshot, never a verbatim quote.
+
+The same rule applies to any code file that is unusually large: quote signatures and the relevant excerpt, link the rest by file path + line range.
+
 ## Extraction Process
 
 When creating the snapshot, follow this order:
@@ -96,3 +106,16 @@ When creating the snapshot, follow this order:
 4. **Read config files**: `.env.example`, config modules, database setup
 5. **Read requirement-relevant files**: files in directories that relate to the requirement topic
 6. **Summarize and write**: Condense findings into the snapshot format
+
+## Output Delivery
+
+Wrap the snapshot in the literal delimiters `<<<CONTEXT_SNAPSHOT_START>>>` and `<<<CONTEXT_SNAPSHOT_END>>>` (each on its own line), then print the `CONTEXT SNAPSHOT COMPLETE` signal.
+
+### File Transport (文件化传输)
+
+The Task tool's return channel truncates long output. To bypass it, the dispatch directive tells you a deterministic **staging file path** (e.g. `<projectDir>/.ghs/plans/<plan_id>.snapshot.raw.md`). When a path is given:
+
+1. Use the **Write** tool to write your FULL delimited output (the `<<<CONTEXT_SNAPSHOT_START>>>` … `<<<CONTEXT_SNAPSHOT_END>>>` text) to that path.
+2. Then print only the completion signal (`CONTEXT SNAPSHOT COMPLETE`) in your reply — **do not repeat the full snapshot in the reply**.
+
+`ghs-plan-review` reads the staging file as the primary parse source. If you cannot write the file, fall back to printing the full delimited text in your reply.

@@ -39,10 +39,12 @@ import { detectCodegraph } from "../lib/codegraph.ts";
 import {
   createInitialPlanStatus,
   writePlanStatus,
+  stagingPath,
   DEFAULT_MAX_ROUNDS,
 } from "../lib/state.ts";
 import { CONTEXT_CODEGRAPH_PROMPT } from "../prompts/context-codegraph.ts";
 import { CONTEXT_GREP_PROMPT } from "../prompts/context-grep.ts";
+import { fileTransportDirective } from "../prompts/file-transport.ts";
 import { formatLocalDate } from "../lib/scripts/archive-sprint.ts";
 import {
   stageHeader,
@@ -272,6 +274,17 @@ export const planStartTool = tool({
     lines.push("");
     lines.push("--- context-explorer dispatch directive ---");
     lines.push(contextPrompt);
+    // File-transport (Tier 1): instruct the context-explorer to Write its full
+    // delimited output to the deterministic snapshot staging file rather than
+    // returning it through the lossy Task-return channel. `ghs-plan-review` in
+    // snapshot mode reads this file as the primary parse source.
+    lines.push("");
+    lines.push(
+      fileTransportDirective(
+        stagingPath(projectDir, planId, "snapshot"),
+        "snapshot",
+      ),
+    );
     // (7) Apply workflow chrome (mechanism-1 injection point ② main path).
     // Post-advance timing: getStageSignature is invoked AFTER writePlanStatus
     // completed, so it observes the just-written `designing` status — this is

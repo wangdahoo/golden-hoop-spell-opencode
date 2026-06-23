@@ -28,6 +28,7 @@ import {
   createInitialPlanStatus,
   writePlanStatus,
   plansDir,
+  stagingPath,
   DEFAULT_MAX_ROUNDS,
   type PlanStatus,
 } from "../src/lib/state";
@@ -267,6 +268,39 @@ describe("execute snapshot mode", () => {
     const rawText = await Bun.file(rawPath).text();
     expect(rawText).toContain("no delimiters here");
   });
+
+  test("oversize snapshot (>30KB) appends an over-quoting warning (Tier 2)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // >30 KB of snapshot body → crosses the SNAPSHOT_OVERSIZE_WARNING_BYTES floor.
+    const bigBody = "x".repeat(31_000);
+    const result = await planReviewTool.execute(
+      { snapshot: snapshotBlob(bigBody) },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("snapshot 已提取");
+    expect(result).toContain("疑似过度逐字转述");
+    expect(result).toContain("Large-Input Handling");
+    // Still advances (non-blocking).
+    const { readPlanStatus } = await import("../src/lib/state");
+    const updated = await readPlanStatus(tempRoot, status.plan_id);
+    expect(updated?.status).toBe("designing");
+  });
+
+  test("small snapshot (<30KB) does NOT append the over-quoting warning", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("snapshot 已提取");
+    expect(result).not.toContain("疑似过度逐字转述");
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -303,6 +337,129 @@ describe("execute plan mode", () => {
     const { readPlanStatus } = await import("../src/lib/state");
     const updated = await readPlanStatus(tempRoot, status.plan_id);
     expect(updated?.status).toBe("reviewing");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// execute — file-transport (Tier 1): staging file vs inline payload
+// -----------------------------------------------------------------------------
+
+describe("execute plan mode — file-transport (Tier 1)", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-ft-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("prefers the staging file when the inline payload is a short signal (no END marker)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // Subagent wrote its FULL delimited output to the staging file.
+    const staging = stagingPath(tempRoot, status.plan_id, "plan");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, planBlob(longBody("# 来自 staging 的方案")));
+
+    // Main AI relays only a short completion signal (file-transport path).
+    const result = await planReviewTool.execute(
+      { plan: "PLAN DESIGN COMPLETE" },
+      mockCtx(tempRoot),
+    );
+
+    // Plan was parsed from the staging file, not the short inline signal.
+    expect(result).toContain("Plan 已提取");
+    expect(result).toContain("source: staging");
+
+    const planPath = join(plansDir(tempRoot), status.plan_file);
+    expect(await Bun.file(planPath).text()).toContain("来自 staging 的方案");
+  });
+
+  test("uses the inline payload when it is complete (has END marker), even if a staging file exists", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // A staging file exists (would otherwise be preferred)...
+    const staging = stagingPath(tempRoot, status.plan_id, "plan");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, planBlob(longBody("# 来自 staging 的方案")));
+
+    // ...but the inline payload is itself complete → it wins, byte-stably.
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# 来自 inline 的方案")) },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("Plan 已提取");
+    expect(result).not.toContain("source: staging");
+
+    const planPath = join(plansDir(tempRoot), status.plan_file);
+    expect(await Bun.file(planPath).text()).toContain("来自 inline 的方案");
+  });
+
+  test("ignores a stale staging file that lacks the START marker, falls back to inline", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // Staging file exists but is garbage (no START marker) — must be ignored.
+    const staging = stagingPath(tempRoot, status.plan_id, "plan");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, "stale garbage with no delimiters");
+
+    // Inline is a short signal → after ignoring staging, it parses as empty.
+    const result = await planReviewTool.execute(
+      { plan: "PLAN DESIGN COMPLETE" },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("解析失败");
+    expect(result).not.toContain("source: staging");
+  });
+
+  test("no staging file → legacy inline path is byte-stable (parses inline)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // No staging file written at all (legacy / non-compliant subagent).
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# 纯 inline 路径")) },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("Plan 已提取");
+    expect(result).not.toContain("source: staging");
+    const planPath = join(plansDir(tempRoot), status.plan_file);
+    expect(await Bun.file(planPath).text()).toContain("纯 inline 路径");
+  });
+});
+
+describe("execute snapshot mode — file-transport (Tier 1)", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-ftsnap-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("prefers the staging file when the inline payload is a short signal", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const staging = stagingPath(tempRoot, status.plan_id, "snapshot");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, snapshotBlob(longBody("Arch snapshot from staging")));
+
+    const result = await planReviewTool.execute(
+      { snapshot: "CONTEXT SNAPSHOT COMPLETE" },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("Context snapshot 已提取");
+    expect(result).toContain("source: staging");
+    const ctxPath = join(plansDir(tempRoot), status.context_file);
+    expect(await Bun.file(ctxPath).text()).toContain("from staging");
   });
 });
 

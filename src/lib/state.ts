@@ -136,6 +136,45 @@ export function statusFilePath(projectDir: string, planId: string): string {
 }
 
 // -----------------------------------------------------------------------------
+// File-transport staging paths (Tier 1 of the loop-cost fix)
+// -----------------------------------------------------------------------------
+
+/**
+ * The three subagent families whose delimited output can be staged to disk to
+ * bypass the lossy Task-return channel. Each maps to one `ghs-plan-review`
+ * mode and one delimiter kind.
+ */
+export type StagingKind = "snapshot" | "plan" | "review";
+
+/**
+ * Absolute path to a subagent's raw staging file
+ * (`<projectDir>/.ghs/plans/<plan_id>.<kind>.raw.md`).
+ *
+ * File-based transport (Tier 1): instead of returning a large delimited
+ * payload through the OpenCode Task-return channel — which truncates long
+ * subagent output and silently corrupts the plan loop — the subagent writes
+ * its full delimited output here via the Write tool (direct disk access, no
+ * truncation) and returns only a short completion signal. `ghs-plan-review`
+ * then reads this file as the primary parse source.
+ *
+ * The file holds the RAW delimited text (markers included) — not a cleaned
+ * artefact — so the parser remains the single extraction/validation source
+ * and the `open_ended` / `fallback_used` / WARNING-header semantics are
+ * preserved. The cleaned artefacts still land at `plan_file` / `context_file`
+ * / `review_file` via `persistArtefact`.
+ *
+ * Additive sibling of {@link statusFilePath}; does not alter any existing
+ * path convention. Staging files live under gitignored `.ghs/plans/`.
+ */
+export function stagingPath(
+  projectDir: string,
+  planId: string,
+  kind: StagingKind,
+): string {
+  return resolve(plansDir(projectDir), `${planId}.${kind}.raw.md`);
+}
+
+// -----------------------------------------------------------------------------
 // Timestamp helper
 // -----------------------------------------------------------------------------
 

@@ -24,6 +24,7 @@ import {
   writePlanStatus,
   planStatusExists,
   statusFilePath,
+  stagingPath,
   plansDir,
   formatLocalTimestamp,
   DEFAULT_MAX_ROUNDS,
@@ -139,6 +140,18 @@ describe("path helpers", () => {
   test("statusFilePath resolves <projectDir>/.ghs/plans/<planId>-status.json", () => {
     expect(statusFilePath("/proj", "2026-06-20-slug")).toBe(
       join("/proj", ".ghs", "plans", "2026-06-20-slug-status.json"),
+    );
+  });
+
+  test("stagingPath resolves <projectDir>/.ghs/plans/<planId>.<kind>.raw.md for each kind", () => {
+    expect(stagingPath("/proj", "2026-06-20-slug", "snapshot")).toBe(
+      join("/proj", ".ghs", "plans", "2026-06-20-slug.snapshot.raw.md"),
+    );
+    expect(stagingPath("/proj", "2026-06-20-slug", "plan")).toBe(
+      join("/proj", ".ghs", "plans", "2026-06-20-slug.plan.raw.md"),
+    );
+    expect(stagingPath("/proj", "2026-06-20-slug", "review")).toBe(
+      join("/proj", ".ghs", "plans", "2026-06-20-slug.review.raw.md"),
     );
   });
 });

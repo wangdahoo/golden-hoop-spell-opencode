@@ -155,6 +155,15 @@ PLAN DESIGN COMPLETE
 
 - Missing or extra brackets: `<<PLAN_START>>` / `<<<<PLAN_START>>>>` — same problem.
 
+## File Transport (文件化传输)
+
+The Task tool's return channel truncates long output, which silently clips the `<<<PLAN_END>>>` marker and corrupts the loop. To bypass that channel, the dispatch directive tells you a deterministic **staging file path** (e.g. `<projectDir>/.ghs/plans/<plan_id>.plan.raw.md`). When a path is given:
+
+1. Use the **Write** tool to write your FULL delimited output (the same `<<<PLAN_START>>>` … `<<<PLAN_END>>>` text above) to that path.
+2. Then print only the completion signal (`PLAN DESIGN COMPLETE`) in your reply — **do not repeat the full plan text in the reply**.
+
+`ghs-plan-review` reads the staging file as the primary parse source. The delimiter protocol above still applies — the file must contain the exact markers. If you cannot write the file, fall back to printing the full delimited text in your reply (the inline path still works).
+
 ## Completion Signal
 
 - Design complete: `PLAN DESIGN COMPLETE`

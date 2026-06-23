@@ -54,6 +54,8 @@ export const CONTEXT_CODEGRAPH_PROMPT = `检测到 \`.codegraph/\` 已初始化 
 - 架构摘要（入口点、模块职责、数据模型、关键模式）
 - 与需求相关的代码摘录（函数签名、schema、路由、类型定义 —— 不要整文件粘贴）
 
+大体量输入处理：若需求指向超大文件（如 >100KB 的会话日志/数据 dump），只采样头部 + grep 定位关键段并摘要，绝不逐字转述进快照（会膨胀下游每个 prompt）。详见 shared/references/context-snapshot-guide.md「Large-Input Handling」。
+
 分隔标记契约（硬性，parser 据此提取 snapshot）：
 - snapshot 全文必须放在 \`<<<CONTEXT_SNAPSHOT_START>>>\` 与 \`<<<CONTEXT_SNAPSHOT_END>>>\` 之间，两个标记各占独立一行
 - 不要把标记或内容包进 markdown 代码围栏（不要用三反引号包裹）

@@ -168,6 +168,15 @@ REVIEW COMPLETE | Verdict: PASS | Severe: 0 Medium: 0 Optimization: 1
 
 - Completion signal without `Verdict: PASS|FAIL` — the dispatcher cannot determine the verdict and will retry.
 
+### File Transport (文件化传输)
+
+The Task tool's return channel truncates long output, which is especially damaging for reviews — it clips the trailing `REVIEW COMPLETE | Verdict: …` line and forces a retry. To bypass that channel, the dispatch directive tells you a deterministic **staging file path** (e.g. `<projectDir>/.ghs/plans/<plan_id>.review.raw.md`). When a path is given:
+
+1. Use the **Write** tool to write your FULL delimited output (the `<<<REVIEW_START>>>` … `<<<REVIEW_END>>>` text **plus** the verdict line) to that path.
+2. Then print only the completion signal (`PLAN REVIEW COMPLETE`) in your reply — **do not repeat the full review text in the reply**.
+
+`ghs-plan-review` reads the staging file as the primary parse source and recovers the verdict from it. The delimiter + verdict protocol above still applies to the file's contents.
+
 ## Review Checklist
 
 These are the dimensions you should check systematically:

@@ -47,8 +47,10 @@ import {
   readPlanStatus,
   writePlanStatus,
   plansDir,
+  stagingPath,
   type PlanStatus,
   type PlanStatusValue,
+  type StagingKind,
 } from "../lib/state.ts";
 import {
   parseContextSnapshot,
@@ -60,6 +62,7 @@ import {
 } from "../lib/parse.ts";
 import { getDesignerPrompt } from "../prompts/plan-designer.ts";
 import { PLAN_REVIEWER_PROMPT } from "../prompts/plan-reviewer.ts";
+import { fileTransportDirective } from "../prompts/file-transport.ts";
 import { resolveProjectDir } from "../lib/project.ts";
 import { loadGhsConfig, type GhsConfig } from "../lib/config.ts";
 import { pluginRoot } from "../lib/paths.ts";
@@ -93,6 +96,18 @@ const PLAN_STAGES = ["plan:designing", "plan:reviewing", "plan:finalizing"];
  */
 const NEXT_ACTION_PLAN_REVIEW =
   "execute the dispatch directive above, then advance to the next `ghs-plan-review` call";
+
+/**
+ * Soft byte threshold above which an extracted context snapshot is considered
+ * oversize (Tier 2 of the loop-cost fix). A well-summarised snapshot is
+ * typically a few KB; one above this floor almost certainly over-quotes its
+ * inputs (e.g. a multi-hundred-KB session log pasted verbatim), which then
+ * inflates every downstream designer/reviewer prompt and dominates the token
+ * budget. When the extracted snapshot crosses this threshold, the snapshot
+ * handler appends a warning nudging a tighter re-run. Non-blocking — the
+ * state machine still advances to `designing`.
+ */
+const SNAPSHOT_OVERSIZE_WARNING_BYTES = 30_000;
 
 // -----------------------------------------------------------------------------
 // Mode-disambiguation schema (plan §5 risk row).
@@ -264,6 +279,72 @@ async function persistRawPostMortem(
   const absPath = join(plansDir(projectDir), `${relativeBaseName}.raw`);
   await Bun.write(absPath, rawText);
   return absPath;
+}
+
+// -----------------------------------------------------------------------------
+// File-transport source resolver (Tier 1 of the loop-cost fix)
+// -----------------------------------------------------------------------------
+
+/**
+ * Resolve the raw text to parse for one plan-review mode, preferring a
+ * subagent-written staging file over the (possibly truncated) inline payload.
+ *
+ * The OpenCode Task-return channel truncates long subagent output, so the
+ * inline `snapshot` / `plan` / `review` arg the main AI passes may be a
+ * short completion signal (file-transport path) or a clipped fragment
+ * (truncation path). To eliminate truncation at the source, each subagent is
+ * instructed to Write its full delimited output to a deterministic staging
+ * file (see `fileTransportDirective`); this helper reads that file when it
+ * is the more complete source.
+ *
+ * Selection rule (regression-free):
+ *   - If the inline payload already contains the END marker it is complete →
+ *     use it verbatim. This preserves byte-for-byte behaviour for legacy
+ *     callers that paste the full text (existing tests + the v5 ok-path AC).
+ *   - Otherwise the inline payload is a short signal or a truncated stream →
+ *     read the staging file. If it exists and contains the START marker (the
+ *     subagent actually wrote its delimited output there), use it.
+ *   - Otherwise fall back to the inline payload (and the v5 open_ended /
+ *     recovery-nudge mitigation handles any residual truncation).
+ *
+ * The END/START marker checks make the pick robust to a stale staging file
+ * from a prior round: a stale file without the START marker is ignored.
+ *
+ * @returns the raw text to feed the parser, plus where it came from so the
+ *   caller can surface it for diagnostics.
+ */
+async function readStagingOrInline(args: {
+  projectDir: string;
+  planId: string;
+  kind: StagingKind;
+  startToken: string;
+  endToken: string;
+  inline: string;
+}): Promise<{ rawText: string; source: "staging" | "inline" }> {
+  const { projectDir, planId, kind, startToken, endToken, inline } = args;
+
+  // Complete inline payload → use it directly (legacy / non-truncated path).
+  if (inline.includes(endToken)) {
+    return { rawText: inline, source: "inline" };
+  }
+
+  // Inline is incomplete (short signal or truncated) → try the staging file.
+  const path = stagingPath(projectDir, planId, kind);
+  let stagingText: string | null = null;
+  try {
+    const file = Bun.file(path);
+    if (await file.exists()) {
+      stagingText = await file.text();
+    }
+  } catch {
+    // Unreadable staging file → degrade to inline (do not crash the tool).
+    stagingText = null;
+  }
+  if (stagingText !== null && stagingText.includes(startToken)) {
+    return { rawText: stagingText, source: "staging" };
+  }
+
+  return { rawText: inline, source: "inline" };
 }
 
 // -----------------------------------------------------------------------------
@@ -466,7 +547,18 @@ async function handleSnapshotMode(args: {
   status: PlanStatus;
   rawText: string;
 }): Promise<{ body: string; warning: string }> {
-  const { projectDir, status, rawText } = args;
+  const { projectDir, status } = args;
+  // File-transport (Tier 1): prefer a subagent-written staging file over the
+  // inline payload when the inline payload is incomplete (short signal or
+  // truncated). See `readStagingOrInline`.
+  const { rawText, source } = await readStagingOrInline({
+    projectDir,
+    planId: status.plan_id,
+    kind: "snapshot",
+    startToken: "<<<CONTEXT_SNAPSHOT_START>>>",
+    endToken: "<<<CONTEXT_SNAPSHOT_END>>>",
+    inline: args.rawText,
+  });
   const result = parseContextSnapshot(rawText);
 
   if (result.status === "empty" || result.status === "malformed") {
@@ -495,6 +587,16 @@ async function handleSnapshotMode(args: {
   // Success — persist the snapshot.
   await persistArtefact(projectDir, status.context_file, result.content, result);
 
+  // Tier 2 context-sizing guard: warn when the extracted snapshot is
+  // oversize (it almost certainly over-quotes a large input and will bloat
+  // every downstream prompt). Non-blocking — best-effort nudge to re-run
+  // the explorer with tighter summarisation.
+  const snapshotBytes = Buffer.byteLength(result.content, "utf8");
+  const oversizeWarning =
+    snapshotBytes > SNAPSHOT_OVERSIZE_WARNING_BYTES
+      ? `⚠️ Snapshot 约 ${snapshotBytes} 字节（>${SNAPSHOT_OVERSIZE_WARNING_BYTES}），疑似过度逐字转述了大体量输入 —— 会膨胀下游每个 designer/reviewer prompt。建议重跑 context-explorer，对超大文件只采样+grep 定位关键段并摘要（见 context-snapshot-guide.md「Large-Input Handling」）。`
+      : null;
+
   // Advance state: the snapshot is ready, the designer is next.
   const nextStatus: PlanStatus = {
     ...status,
@@ -517,15 +619,18 @@ async function handleSnapshotMode(args: {
         round: nextStatus.round,
         status: nextStatus.status,
       }),
-      `✅ Context snapshot 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+      `✅ Context snapshot 已提取（status: ${result.status}, strategy: ${result.strategy}${source === "staging" ? ", source: staging" : ""}）。`,
       "",
       `Snapshot 写入：${join(plansDir(projectDir), status.context_file)}`,
       `Codegraph 路径：${status.codegraph_available ? "codegraph" : "grep 回退"}`,
+      ...(oversizeWarning ? ["", oversizeWarning] : []),
       "",
       "下一步：派发 plan-designer 设计技术方案。",
       "",
       "--- plan-designer dispatch ---",
       designerPrompt,
+      "",
+      fileTransportDirective(stagingPath(projectDir, status.plan_id, "plan"), "plan"),
     ].join("\n"),
     warning,
   };
@@ -542,7 +647,18 @@ async function handlePlanMode(args: {
   status: PlanStatus;
   rawText: string;
 }): Promise<{ body: string; warning: string }> {
-  const { projectDir, status, rawText } = args;
+  const { projectDir, status } = args;
+  // File-transport (Tier 1): prefer a subagent-written staging file over the
+  // inline payload when the inline payload is incomplete. See
+  // `readStagingOrInline`.
+  const { rawText, source } = await readStagingOrInline({
+    projectDir,
+    planId: status.plan_id,
+    kind: "plan",
+    startToken: "<<<PLAN_START>>>",
+    endToken: "<<<PLAN_END>>>",
+    inline: args.rawText,
+  });
   const result = parsePlan(rawText);
 
   if (result.status === "empty" || result.status === "malformed") {
@@ -580,8 +696,9 @@ async function handlePlanMode(args: {
   // Build the success body. When the parse landed via the `open_ended`
   // fallback (START present, END absent → truncated stream), append the
   // truncation-recovery nudge after the ✅ line (best-effort; the state
-  // machine still advances to `reviewing`). The ok/exact path is byte-
-  // identical to the pre-Phase-2 output (Phase 2 AC #4).
+  // machine still advances to `reviewing`). The ok/exact inline path is
+  // byte-identical to the pre-Phase-2 output (Phase 2 AC #4); the staging
+  // source is surfaced only when file-transport actually fired.
   const successLines: string[] = [
     resultHeader({
       projectDir,
@@ -590,7 +707,7 @@ async function handlePlanMode(args: {
       round: nextStatus.round,
       status: nextStatus.status,
     }),
-    `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+    `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}${source === "staging" ? ", source: staging" : ""}）。`,
   ];
   if (result.strategy === "open_ended") {
     successLines.push("", TRUNCATION_RECOVERY_NUDGE);
@@ -603,6 +720,8 @@ async function handlePlanMode(args: {
     "",
     "--- plan-reviewer dispatch ---",
     PLAN_REVIEWER_PROMPT,
+    "",
+    fileTransportDirective(stagingPath(projectDir, status.plan_id, "review"), "review"),
   );
 
   return {
@@ -631,7 +750,20 @@ async function handleReviewMode(args: {
   status: PlanStatus;
   rawText: string;
 }): Promise<{ body: string; warning: string }> {
-  const { projectDir, status, rawText } = args;
+  const { projectDir, status } = args;
+  // File-transport (Tier 1): prefer a subagent-written staging file over the
+  // inline payload when the inline payload is incomplete. See
+  // `readStagingOrInline`. The review's verdict line lives at the tail, so a
+  // truncated stream is especially damaging here — the staging file is the
+  // primary defence for recovering the verdict.
+  const { rawText } = await readStagingOrInline({
+    projectDir,
+    planId: status.plan_id,
+    kind: "review",
+    startToken: "<<<REVIEW_START>>>",
+    endToken: "<<<REVIEW_END>>>",
+    inline: args.rawText,
+  });
   const result = parseReview(rawText);
   const verdict: Verdict = result.verdict;
 
@@ -835,6 +967,8 @@ async function handleReviewMode(args: {
       "",
       "--- plan-designer dispatch (revise) ---",
       designerPrompt,
+      "",
+      fileTransportDirective(stagingPath(projectDir, status.plan_id, "plan"), "plan"),
     ].join("\n"),
     warning,
   };
