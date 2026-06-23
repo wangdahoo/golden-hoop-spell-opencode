@@ -21,11 +21,12 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { planFinalizeTool, deriveSlug } from "../src/tools/plan-finalize.ts";
+import { planFinalizeTool, deriveSlug, detectSuspectedTruncation } from "../src/tools/plan-finalize.ts";
 import {
   createInitialPlanStatus,
   writePlanStatus,
   readPlanStatus,
+  finalPlansDir,
   type PlanStatus,
 } from "../src/lib/state.ts";
 
@@ -57,20 +58,66 @@ function ctx(worktree: string) {
   return { worktree, directory: worktree } as never;
 }
 
-/** Title + body of a representative plan used across the execute tests. */
+/** Title + body of a representative plan used across the execute tests.
+ * Long enough (trimmed > 1000 chars) to clear the truncation length floor,
+ * and free of code fences so the unclosed-fence signal never fires — this
+ * keeps the existing happy-path assertions valid under the Phase 3 guard. */
 const PLAN_CONTENT = [
   "# Refactor Auth Module",
   "",
   "## Goal",
   "",
-  "Unify the three auth code paths behind a single facade.",
+  "Unify the three auth code paths behind a single facade so that downstream",
+  "callers depend on one stable interface rather than three drifting",
+  "implementations. This removes a whole class of bugs where a token-refresh",
+  "fix lands in one path but not the other two.",
+  "",
+  "## Background",
+  "",
+  "The codebase currently has three authentication code paths that evolved",
+  "independently: the legacy session-cookie path, the JWT bearer-token path",
+  "added for the mobile API, and the OAuth2 path added for third-party",
+  "integrations. Each duplicates token validation, refresh, and revocation",
+  "logic with subtle differences that have caused three production incidents",
+  "in the last quarter. The duplicated logic also inflates review burden and",
+  "slows down security audits because every change must be applied three",
+  "times and verified three times.",
   "",
   "## Phases",
   "",
-  "1. Extract interface.",
-  "2. Migrate callers.",
-  "3. Delete legacy paths.",
+  "1. Extract a common AuthSession interface that all three paths can",
+  "implement. The interface owns token validation, refresh, and revocation",
+  "and exposes a single authenticate(request) entry point.",
+  "2. Migrate each caller to depend on the interface, not the concrete path.",
+  "This is the highest-risk phase and will be done behind feature flags so",
+  "we can roll back per route if a regression appears.",
+  "3. Delete the legacy paths once all callers route through the facade and",
+  "the legacy code has been dark for a full release cycle with no traffic.",
+  "",
+  "## Non-goals",
+  "",
+  "- Changing the wire format of any existing token.",
+  "- Adding new authentication providers.",
+  "- Rewriting the permission or authorization system.",
+  "",
+  "## Risks",
+  "",
+  "The migration touches every authenticated endpoint. We mitigate by rolling",
+  "out behind feature flags, running shadow traffic through the new facade",
+  "for a week before cutting over, and keeping the legacy paths reachable",
+  "for a fast rollback.",
 ].join("\n");
+
+/** Build a plan body well above the FINALIZE_MIN_PLAN_LENGTH (1000) floor,
+ * titled with the given H1, and free of code fences. Used by tests that need
+ * a valid (non-truncated) payload with a specific slug. */
+function longPlan(title: string): string {
+  const pad = (
+    "This plan body is intentionally long enough to clear the truncation " +
+    "length floor enforced by ghs-plan-finalize. "
+  ).repeat(16);
+  return `# ${title}\n\n${pad}\n`;
+}
 
 // -----------------------------------------------------------------------------
 // deriveSlug — pure unit tests
@@ -303,7 +350,7 @@ describe("planFinalizeTool.execute", () => {
 
   test("plan file naming matches the plan_ref convention (YYYY-MM-DD-<slug>.md)", async () => {
     await planFinalizeTool.execute(
-      { plan_content: "# My Cool Plan\n", project_dir: tempRoot },
+      { plan_content: longPlan("My Cool Plan"), project_dir: tempRoot },
       ctx(tempRoot),
     );
     const { readdir } = await import("node:fs/promises");
@@ -325,5 +372,224 @@ describe("planFinalizeTool.execute", () => {
     const { readdir } = await import("node:fs/promises");
     const files = await readdir(join(tempRoot, ".ghs", "plans"));
     expect(files).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 guard + docs dual-write (Feature s2-feat-003)
+  // ---------------------------------------------------------------------------
+
+  test("REJECTED on unclosed code fence — no file written, status unchanged", async () => {
+    // Seed a non-terminal status so we can assert it was NOT flipped.
+    const slug = deriveSlug(PLAN_CONTENT);
+    const today = (() => {
+      const n = new Date();
+      const y = n.getFullYear();
+      const m = String(n.getMonth() + 1).padStart(2, "0");
+      const d = String(n.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    })();
+    const planId = `${today}-${slug}`;
+    await writePlanStatus(tempRoot, baselineStatus({ plan_id: planId, status: "pending_approval" }));
+
+    // Odd number of fences (one opening, no closing) + length over the floor
+    // so the ONLY trigger is the unclosed-fence signal.
+    const truncated = PLAN_CONTENT + "\n\n```ts\nconst x = 1;\n";
+    const result = await planFinalizeTool.execute(
+      { plan_content: truncated, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    // REJECTED body.
+    expect(result).toContain("=== ghs-plan-finalize REJECTED (suspected truncation) ===");
+    expect(result).toContain("未写盘、status 未变");
+    // Recovery instruction.
+    expect(result).toContain("ghs-plan-finalize");
+
+    // No plan file was written to .ghs/plans/.
+    const { readdir } = await import("node:fs/promises");
+    const ghsFiles = await readdir(join(tempRoot, ".ghs", "plans")).catch(() => []);
+    // Only the status.json should be present (seeded by us), no .md artefact.
+    expect(ghsFiles.some((f) => f.endsWith(".md"))).toBe(false);
+
+    // No docs mirror either.
+    const docsFiles = await readdir(finalPlansDir(tempRoot)).catch(() => []);
+    expect(docsFiles).toHaveLength(0);
+
+    // status.json still pending_approval (unchanged).
+    const after = await readPlanStatus(tempRoot, planId);
+    expect(after?.status).toBe("pending_approval");
+  });
+
+  test("even fences + length >= 1000 passes the guard and dual-writes", async () => {
+    // A legal plan that ENDS with a properly closed code block — two fences
+    // (even) — must NOT be falsely rejected by the guard.
+    const content =
+      longPlan("Closed Fence Plan") +
+      "\n```ts\nconst answer = 42;\n```\n";
+    // Sanity: the content really is over the floor and has even fences.
+    expect(detectSuspectedTruncation(content)).toBe(false);
+
+    const result = await planFinalizeTool.execute(
+      { plan_content: content, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    expect(result).toContain("=== ghs-plan-finalize complete ===");
+    // Both locations written.
+    expect(result).toContain("Mirrored to:");
+    const { readdir } = await import("node:fs/promises");
+    const ghsFiles = (await readdir(join(tempRoot, ".ghs", "plans"))).filter((f) =>
+      f.endsWith(".md"),
+    );
+    const docsFiles = await readdir(finalPlansDir(tempRoot));
+    expect(ghsFiles).toHaveLength(1);
+    expect(docsFiles).toHaveLength(1);
+    // Same file name in both trees.
+    expect(docsFiles[0]).toBe(ghsFiles[0]);
+  });
+
+  test("legal plan writes byte-for-byte to both .ghs and docs mirrors", async () => {
+    const result = await planFinalizeTool.execute(
+      { plan_content: PLAN_CONTENT, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    expect(result).toContain("=== ghs-plan-finalize complete ===");
+    expect(result).toContain("Mirrored to:");
+
+    const { readdir } = await import("node:fs/promises");
+    const ghsFiles = (await readdir(join(tempRoot, ".ghs", "plans"))).filter((f) =>
+      f.endsWith(".md"),
+    );
+    const docsFiles = await readdir(finalPlansDir(tempRoot));
+    expect(ghsFiles).toHaveLength(1);
+    expect(docsFiles).toHaveLength(1);
+    expect(docsFiles[0]).toBe(ghsFiles[0]);
+
+    // Byte-for-byte equality between the two mirrors AND with the input.
+    const ghsText = await Bun.file(join(tempRoot, ".ghs", "plans", ghsFiles[0]!)).text();
+    const docsText = await Bun.file(join(finalPlansDir(tempRoot), docsFiles[0]!)).text();
+    expect(ghsText).toBe(PLAN_CONTENT);
+    expect(docsText).toBe(PLAN_CONTENT);
+    expect(ghsText).toBe(docsText);
+  });
+
+  test("legal plan with matching status.json flips to approved", async () => {
+    const slug = deriveSlug(PLAN_CONTENT);
+    const today = (() => {
+      const n = new Date();
+      const y = n.getFullYear();
+      const m = String(n.getMonth() + 1).padStart(2, "0");
+      const d = String(n.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    })();
+    const planId = `${today}-${slug}`;
+    await writePlanStatus(tempRoot, baselineStatus({ plan_id: planId, status: "pending_approval" }));
+
+    const result = await planFinalizeTool.execute(
+      { plan_content: PLAN_CONTENT, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    expect(result).toContain("status: approved");
+    expect(result).toContain("Mirrored to:");
+    const after = await readPlanStatus(tempRoot, planId);
+    expect(after?.status).toBe("approved");
+  });
+
+  test("docs mirror failure degrades gracefully — .ghs written + warning + approved", async () => {
+    // Block the docs tree by creating a regular FILE at `docs` so mkdir of
+    // `docs/ghs/plans` fails with ENOTDIR. The .ghs write + status flip must
+    // still succeed, with a warning appended to the result.
+    await writeFile(join(tempRoot, "docs"), "i am a file not a dir");
+
+    const slug = deriveSlug(PLAN_CONTENT);
+    const today = (() => {
+      const n = new Date();
+      const y = n.getFullYear();
+      const m = String(n.getMonth() + 1).padStart(2, "0");
+      const d = String(n.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    })();
+    const planId = `${today}-${slug}`;
+    await writePlanStatus(tempRoot, baselineStatus({ plan_id: planId, status: "pending_approval" }));
+
+    const result = await planFinalizeTool.execute(
+      { plan_content: PLAN_CONTENT, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    // .ghs artefact written.
+    const { readdir } = await import("node:fs/promises");
+    const ghsFiles = (await readdir(join(tempRoot, ".ghs", "plans"))).filter((f) =>
+      f.endsWith(".md"),
+    );
+    expect(ghsFiles).toHaveLength(1);
+    expect(await Bun.file(join(tempRoot, ".ghs", "plans", ghsFiles[0]!)).text()).toBe(
+      PLAN_CONTENT,
+    );
+    // Status still flipped to approved.
+    expect(result).toContain("status: approved");
+    const after = await readPlanStatus(tempRoot, planId);
+    expect(after?.status).toBe("approved");
+    // Warning present, no "Mirrored to:" success line.
+    expect(result).toContain("Failed to mirror plan to docs/ghs/plans/");
+    expect(result).not.toContain("Mirrored to:");
+  });
+
+  test("REJECTED body contains ghs-plan-finalize title and 未写盘 note", async () => {
+    // Too-short content triggers the length-floor signal.
+    const result = await planFinalizeTool.execute(
+      { plan_content: "# Too Short\n", project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+    expect(result).toContain("ghs-plan-finalize REJECTED");
+    expect(result).toContain("未写盘、status 未变");
+    // finalize-specific recovery instruction.
+    expect(result).toContain("重新调用 ghs-plan-finalize");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// detectSuspectedTruncation — pure unit tests (Feature s2-feat-003)
+// -----------------------------------------------------------------------------
+
+describe("detectSuspectedTruncation", () => {
+  test("odd fences (unclosed) -> true even when length is over the floor", () => {
+    const long = "x".repeat(1200);
+    // One opening fence, no closing fence.
+    expect(detectSuspectedTruncation(long + "\n```ts\ncode\n")).toBe(true);
+  });
+
+  test("even fences (properly closed) + length >= 1000 -> false", () => {
+    const long = "x".repeat(1200);
+    expect(detectSuspectedTruncation(long + "\n```ts\ncode\n```\n")).toBe(false);
+  });
+
+  test("zero fences + length >= 1000 -> false", () => {
+    expect(detectSuspectedTruncation("y".repeat(1000))).toBe(false);
+  });
+
+  test("length < 1000 (trimmed) -> true", () => {
+    expect(detectSuspectedTruncation("short")).toBe(true);
+    // Whitespace-only padding must not fool the trim.
+    expect(detectSuspectedTruncation("   \n\t  ")).toBe(true);
+  });
+
+  test("length exactly 1000 (trimmed) -> false (boundary)", () => {
+    expect(detectSuspectedTruncation("a".repeat(1000))).toBe(false);
+  });
+
+  test("three fences (odd) -> true", () => {
+    const long = "x".repeat(1200);
+    // Two blocks opened+closed (4 fences) plus one dangling opener = 5... use 3.
+    expect(detectSuspectedTruncation("```\n```\n```\n" + long)).toBe(true);
+  });
+
+  test("a closing fence with leading whitespace still counts", () => {
+    // The regex `^\s*```/gm` tolerates indented fences.
+    const long = "x".repeat(1200);
+    // 2 indented fences = even.
+    expect(detectSuspectedTruncation(long + "\n  ```\n  code\n  ```\n")).toBe(false);
   });
 });

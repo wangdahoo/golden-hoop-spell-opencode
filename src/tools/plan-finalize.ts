@@ -39,6 +39,7 @@ import { mkdir } from "node:fs/promises";
 
 import {
   plansDir,
+  finalPlansDir,
   readPlanStatus,
   writePlanStatus,
   formatLocalTimestamp,
@@ -86,6 +87,46 @@ const PLAN_STAGES = ["plan:designing", "plan:reviewing", "plan:finalizing"];
  */
 const NEXT_ACTION_PLAN_FINALIZE =
   "call `ghs-sprint` to break the approved plan into atomic features";
+
+// -----------------------------------------------------------------------------
+// Truncation guard (Phase 3, Feature s2-feat-003)
+// -----------------------------------------------------------------------------
+
+/**
+ * Minimum trimmed length a `plan_content` payload must reach to be considered
+ * a complete plan rather than a truncated fragment. 1000 chars is a soft floor
+ * — falling below it only triggers a *rejection* (not an irreversible action),
+ * so the caller can re-invoke `ghs-plan-finalize` with the full text after
+ * recovering it from the Task tool's saved output.
+ */
+const FINALIZE_MIN_PLAN_LENGTH = 1000;
+
+/**
+ * Heuristic guard that rejects `plan_content` payloads suspected of being
+ * truncated before they are persisted to disk (Phase 3 / L3 of the
+ * truncation-save-fix defence-in-depth stack).
+ *
+ * Two OR-combined signals:
+ *   1. **Unclosed code fence** — an odd count of fenced-code-block delimiters
+ *      (lines matching `^\s*``` `) means at least one block was never closed,
+ *      a strong truncation tell. A well-formed plan with no code blocks yields
+ *      zero fences (even) and passes; a plan with N code blocks yields 2N
+ *      fences (even) and passes.
+ *   2. **Length floor** — a trimmed length below {@link FINALIZE_MIN_PLAN_LENGTH}
+ *      is almost certainly a fragment, not a complete plan.
+ *
+ * NOTE (v5): the earlier "trailing backtick" signal was removed. A standard
+ * closing fence is three backticks — an odd length — which would falsely
+ * reject every legitimate plan that ends with a closed code block, trapping
+ * the caller in an infinite retry loop.
+ */
+function detectSuspectedTruncation(content: string): boolean {
+  const fences = content.match(/^\s*```/gm);
+  if (fences && fences.length % 2 !== 0) return true;
+  if (content.trim().length < FINALIZE_MIN_PLAN_LENGTH) return true;
+  return false;
+}
+export { detectSuspectedTruncation };
 
 /**
  * Derive a filesystem-safe slug from a plan's text content.
@@ -261,6 +302,24 @@ export const planFinalizeTool = tool({
 
     const now = new Date();
 
+    // (0) Truncation guard (Phase 3 / L3). Reject suspected-truncated content
+    // BEFORE any disk write or status flip — a truncated plan must never be
+    // silently persisted. This is an early return: no file is written, no
+    // status.json is mutated, and the body carries a finalize-specific
+    // recovery instruction pointing the caller at the Task tool's saved
+    // output to recover the full text.
+    if (detectSuspectedTruncation(args.plan_content)) {
+      const rejectedBody = [
+        "=== ghs-plan-finalize REJECTED (suspected truncation) ===",
+        "",
+        "未写盘、status 未变。",
+        "",
+        "查上次 Task 结果的 Full output saved to 行，读该文件尾部取回完整",
+        "plan_content 后，用完整文本重新调用 ghs-plan-finalize。",
+      ].join("\n");
+      return rejectedBody;
+    }
+
     // (a) Resolve the plan identifier + file name. The plan artefact lives at
     // `<YYYY-MM-DD>-<slug>.md`, matching the source skill's single-file
     // convention (ghs-plan/SKILL.md "File Conventions"): the designer writes
@@ -288,6 +347,22 @@ export const planFinalizeTool = tool({
     // any metadata — the plan text is the user-visible artefact and the
     // designer already formatted it. The file name carries the date.
     await Bun.write(planFilePath, args.plan_content);
+
+    // (c.5) Mirror the plan to the committable `docs/ghs/plans/` tree (Phase 4
+    // / L4). The `.ghs/` artefact above is gitignored; this mirror is the path
+    // users check into version control and share with reviewers. The write is
+    // wrapped in try/catch because the canonical `.ghs/` write already
+    // succeeded — a docs-mirror failure is a degraded-mode condition, not a
+    // reason to abort finalisation. On failure we append a warning to the
+    // result string instead of throwing.
+    const docsPlanFilePath = join(finalPlansDir(projectDir), planFileName);
+    let docsWarning: string | null = null;
+    try {
+      await mkdir(finalPlansDir(projectDir), { recursive: true });
+      await Bun.write(docsPlanFilePath, args.plan_content);
+    } catch (err) {
+      docsWarning = `⚠️  Failed to mirror plan to docs/ghs/plans/: ${(err as Error).message}`;
+    }
 
     // (d) Flip the dispatcher status to `approved` if a status file exists for
     // this plan. `markPlanApproved` returns null when there is no status file
@@ -339,6 +414,11 @@ export const planFinalizeTool = tool({
     lines.push("");
     lines.push(`Project directory: ${projectDir}`);
     lines.push(`Plan written to:   ${planFilePath}`);
+    if (docsWarning) {
+      lines.push(docsWarning);
+    } else {
+      lines.push(`Mirrored to:       ${docsPlanFilePath}`);
+    }
     lines.push(`Plan id:           ${planId}`);
     if (statusPath) {
       lines.push(`Status updated:    ${statusPath} (status: approved)`);

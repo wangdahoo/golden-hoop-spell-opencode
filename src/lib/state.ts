@@ -110,6 +110,20 @@ export function plansDir(projectDir: string): string {
 }
 
 /**
+ * Directory holding the committable mirror of finalised plans
+ * (`<projectDir>/docs/ghs/plans/`). The `.ghs/` tree is gitignored, so
+ * `ghs-plan-finalize` additionally writes each approved plan here — a path
+ * users can check into version control and share with reviewers.
+ *
+ * Additive sibling of {@link plansDir}; it does NOT replace or alter the
+ * canonical `.ghs/plans/` location (Phase 4 of the truncation-save-fix sprint,
+ * Feature s2-feat-003).
+ */
+export function finalPlansDir(projectDir: string): string {
+  return resolve(projectDir, "docs", "ghs", "plans");
+}
+
+/**
  * Absolute path to a plan's status file
  * (`<projectDir>/.ghs/plans/<plan_id>-status.json`).
  *

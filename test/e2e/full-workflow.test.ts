@@ -203,7 +203,11 @@ describe("e2e: full ghs plugin workflow (init → … → archive) (s5-feat-005)
     // ========================================================================
     // (7) ghs-plan-finalize — write final plan markdown + flip status to approved.
     // ========================================================================
-    const finalPlan = "# E2E Finalised Plan\n\n## Goal\n\nShip the demo end-to-end.\n";
+    // The content must clear the Phase 3 truncation length floor (1000 chars)
+    // so the finalize guard admits it rather than rejecting it as a fragment.
+    const finalPlan =
+      "# E2E Finalised Plan\n\n## Goal\n\nShip the demo end-to-end.\n\n## Detail\n\n" +
+      "This section pads the plan content past the finalize truncation length floor. ".repeat(15);
     const finalizeResult = await planFinalizeTool.execute(
       {
         plan_content: finalPlan,

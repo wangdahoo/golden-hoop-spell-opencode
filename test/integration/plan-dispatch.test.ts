@@ -175,7 +175,11 @@ describe("integration: plan dispatcher end-to-end (R2)", () => {
     expect(existsSync(join(plansDir(projectDir), status!.review_file!))).toBe(true);
 
     // (5) ghs-plan-finalize — writes the final plan markdown + flips status.
-    const finalPlan = "# Finalised Plan\n\n## Goal\n\nShip the feature.\n";
+    // The content must clear the Phase 3 truncation length floor (1000 chars)
+    // so the finalize guard admits it rather than rejecting it as a fragment.
+    const finalPlan =
+      "# Finalised Plan\n\n## Goal\n\nShip the feature.\n\n## Detail\n\n" +
+      "This section pads the plan content past the finalize truncation length floor. ".repeat(15);
     const finalizeResult = await planFinalizeTool.execute(
       {
         plan_content: finalPlan,
