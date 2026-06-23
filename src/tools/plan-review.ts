@@ -54,6 +54,7 @@ import {
   parseContextSnapshot,
   parsePlan,
   parseReview,
+  looksTruncated,
   type ParseResult,
   type Verdict,
 } from "../lib/parse.ts";
@@ -291,6 +292,25 @@ function resultHeader(args: {
 }
 
 /**
+ * Truncation-recovery nudge appended (best-effort) when a parse result looks
+ * truncated — i.e. the raw text had a START delimiter but no END delimiter
+ * (the upstream subagent output was clipped mid-stream by the display layer).
+ *
+ * This is Phase 2 of the layered truncation defence (plan §Phase 2). It
+ * surfaces in two places:
+ *   - `buildRetryInstruction` when `looksTruncated(rawText) === true` (retry
+ *     path: empty/malformed/verdict-null);
+ *   - `handlePlanMode` success branch when `result.strategy === "open_ended"`
+ *     (the open_ended fallback extracted START..EOF — not exact, so the user
+ *     should recover the full text before advancing).
+ *
+ * The nudge is non-blocking: the ok/exact path bytes are unchanged, and the
+ * open_ended success branch still advances the state machine to `reviewing`.
+ */
+const TRUNCATION_RECOVERY_NUDGE =
+  "疑似截断——查上次 Task 结果的 'Full output saved to:' 行，读该文件尾部取回完整 END 标记与裁决行后，用完整文本重新调用 ghs-plan-review（同模式）。";
+
+/**
  * Build the retry instruction when parsing failed (empty/malformed/verdict-less).
  *
  * Mirrors the source skill's "Format Recovery" appendix trigger: the
@@ -303,6 +323,13 @@ function buildRetryInstruction(args: {
   mode: PlanReviewMode;
   result: ParseResult;
   rawPath: string;
+  /**
+   * When `true`, the retry instruction appends the truncation-recovery nudge
+   * (Phase 2) pointing the caller at the saved tool-output file. Computed by
+   * the caller via `looksTruncated(rawText, startToken, endToken)`. When
+   * `false`/omitted the retry body is byte-identical to the pre-Phase-2 output.
+   */
+  truncationSuspected?: boolean;
 }): string {
   const subagent =
     args.mode === "snapshot"
@@ -317,7 +344,7 @@ function buildRetryInstruction(args: {
         ? "`<<<PLAN_START>>>` / `<<<PLAN_END>>>`"
         : "`<<<REVIEW_START>>>` / `<<<REVIEW_END>>>` + 裁决行 `REVIEW COMPLETE | Verdict: PASS|FAIL | ...`";
 
-  return [
+  const lines = [
     resultHeader({
       projectDir: args.projectDir,
       planId: args.planId,
@@ -336,7 +363,11 @@ function buildRetryInstruction(args: {
     "- 解析器警告：" + (args.result.warnings.join("; ") || "(none)"),
     "",
     "收到合规输出后，再次调用 `ghs-plan-review`（同模式）推进。",
-  ].join("\n");
+  ];
+  if (args.truncationSuspected) {
+    lines.push("", TRUNCATION_RECOVERY_NUDGE);
+  }
+  return lines.join("\n");
 }
 
 // -----------------------------------------------------------------------------
@@ -451,6 +482,11 @@ async function handleSnapshotMode(args: {
         mode: "snapshot",
         result,
         rawPath,
+        truncationSuspected: looksTruncated(
+          rawText,
+          "<<<CONTEXT_SNAPSHOT_START>>>",
+          "<<<CONTEXT_SNAPSHOT_END>>>",
+        ),
       }),
       warning: "",
     };
@@ -522,6 +558,11 @@ async function handlePlanMode(args: {
         mode: "plan",
         result,
         rawPath,
+        truncationSuspected: looksTruncated(
+          rawText,
+          "<<<PLAN_START>>>",
+          "<<<PLAN_END>>>",
+        ),
       }),
       warning: "",
     };
@@ -536,24 +577,36 @@ async function handlePlanMode(args: {
   };
   await writePlanStatus(projectDir, nextStatus);
 
+  // Build the success body. When the parse landed via the `open_ended`
+  // fallback (START present, END absent → truncated stream), append the
+  // truncation-recovery nudge after the ✅ line (best-effort; the state
+  // machine still advances to `reviewing`). The ok/exact path is byte-
+  // identical to the pre-Phase-2 output (Phase 2 AC #4).
+  const successLines: string[] = [
+    resultHeader({
+      projectDir,
+      planId: status.plan_id,
+      mode: "plan",
+      round: nextStatus.round,
+      status: nextStatus.status,
+    }),
+    `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
+  ];
+  if (result.strategy === "open_ended") {
+    successLines.push("", TRUNCATION_RECOVERY_NUDGE);
+  }
+  successLines.push(
+    "",
+    `Plan 写入：${join(plansDir(projectDir), status.plan_file)}`,
+    "",
+    "下一步：派发 plan-reviewer 评审技术方案。",
+    "",
+    "--- plan-reviewer dispatch ---",
+    PLAN_REVIEWER_PROMPT,
+  );
+
   return {
-    body: [
-      resultHeader({
-        projectDir,
-        planId: status.plan_id,
-        mode: "plan",
-        round: nextStatus.round,
-        status: nextStatus.status,
-      }),
-      `✅ Plan 已提取（status: ${result.status}, strategy: ${result.strategy}）。`,
-      "",
-      `Plan 写入：${join(plansDir(projectDir), status.plan_file)}`,
-      "",
-      "下一步：派发 plan-reviewer 评审技术方案。",
-      "",
-      "--- plan-reviewer dispatch ---",
-      PLAN_REVIEWER_PROMPT,
-    ].join("\n"),
+    body: successLines.join("\n"),
     warning: "",
   };
 }
@@ -611,6 +664,11 @@ async function handleReviewMode(args: {
       mode: "review",
       result,
       rawPath,
+      truncationSuspected: looksTruncated(
+        rawText,
+        "<<<REVIEW_START>>>",
+        "<<<REVIEW_END>>>",
+      ),
     });
     return {
       body: retry.replace(

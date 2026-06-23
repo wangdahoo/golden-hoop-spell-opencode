@@ -775,3 +775,105 @@ describe("planner_backend dispatch resolution (s1-feat-009)", () => {
     ).rejects.toThrow(/Invalid enum value/);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Truncation recovery nudge (Feature s2-feat-002, Phase 2)
+// -----------------------------------------------------------------------------
+//
+// When a subagent output looks truncated (START present, END absent), the
+// retry path and the open_ended success path append a best-effort nudge
+// pointing the caller at the saved tool-output file so it can recover the
+// full text. The ok/exact success path and the non-truncated retry path stay
+// byte-identical to pre-Phase-2 output.
+
+describe("truncation recovery nudge (s2-feat-002)", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-trunc-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  /** PLAN_START present, END absent, body long enough for open_ended to succeed. */
+  function truncatedPlanBlob(body: string): string {
+    return `<<<PLAN_START>>>\n${body}`;
+  }
+
+  test("AC #1 retry path + looksTruncated=true → retry body contains tool-output recovery guidance", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // START present, END absent, but the body is far too short → open_ended
+    // finds too-short content (foundShortContent) → status=empty → retry
+    // path. looksTruncated(rawText, START, END) === true.
+    const truncatedShort = "<<<PLAN_START>>>\nshort body";
+
+    const result = await planReviewTool.execute(
+      { plan: truncatedShort },
+      mockCtx(tempRoot),
+    );
+
+    // Retry body present.
+    expect(result).toContain("解析失败");
+    // Recovery nudge appended.
+    expect(result).toContain("疑似截断");
+    expect(result).toContain("Full output saved to");
+  });
+
+  test("AC #2 retry path + looksTruncated=false → no nudge (existing retry body unchanged)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    // No delimiters at all → looksTruncated=false, status=empty → retry path.
+    const noDelimiters = "no delimiters here, just short garbage";
+
+    const result = await planReviewTool.execute(
+      { plan: noDelimiters },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("解析失败");
+    // No recovery nudge — bytes identical to pre-Phase-2 retry body.
+    expect(result).not.toContain("疑似截断");
+    expect(result).not.toContain("Full output saved to");
+  });
+
+  test("AC #3 open_ended success (START no END, long body) → ✅ line followed by nudge", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { plan: truncatedPlanBlob(longBody("# Truncated Plan")) },
+      mockCtx(tempRoot),
+    );
+
+    // Success branch taken (not retry): open_ended extracted START..EOF.
+    expect(result).toContain("Plan 已提取");
+    expect(result).toContain("strategy: open_ended");
+    // Nudge present.
+    expect(result).toContain("疑似截断");
+    expect(result).toContain("Full output saved to");
+    // Nudge lands AFTER the ✅ success-marker line.
+    const checkIdx = result.indexOf("Plan 已提取");
+    const nudgeIdx = result.indexOf("疑似截断");
+    expect(checkIdx).toBeGreaterThan(-1);
+    expect(nudgeIdx).toBeGreaterThan(checkIdx);
+  });
+
+  test("AC #4 ok exact success (paired delimiters) → no nudge (ok path bytes unchanged)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# Exact Plan")) },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("Plan 已提取");
+    expect(result).toContain("strategy: exact_delimiter");
+    // No nudge — ok/exact path byte-identical to pre-Phase-2.
+    expect(result).not.toContain("疑似截断");
+    expect(result).not.toContain("Full output saved to");
+  });
+});

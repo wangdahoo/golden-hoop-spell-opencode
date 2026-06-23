@@ -27,6 +27,7 @@ import {
 export {
   parseDelimitedOutput,
   serializeResult,
+  looksTruncated,
   type ParseDelimitedOutputArgs,
   type ParseResult,
   type ParseStatus,
