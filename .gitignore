@@ -234,3 +234,6 @@ $RECYCLE.BIN/
 
 # codegraph MCP runtime index (db / socket / pid / logs)
 .codegraph/
+
+screenshots/
+cases/
