@@ -52,7 +52,7 @@ under `.ghs/plans/`. A semantic slug makes the directory self-describing
   filesystem-safety sanitiser and silently falls back to `plan`.
 
 The **original requirement description stays in chat context** — it is fed
-verbatim to the `ghs-context-haiku` / `ghs-plan-designer` / `ghs-plan-reviewer`
+verbatim to the `ghs-context-explorer` / `ghs-plan-designer` / `ghs-plan-reviewer`
 subagents in subsequent steps. `slug_seed` only names files; it does not carry
 the requirement.
 
@@ -89,7 +89,7 @@ written. Do NOT:
 - batch multiple stages into one turn.
 
 If the anchor names a subagent dispatch (e.g. a Task tool call to
-`ghs-context-haiku`), perform that dispatch and feed its output back into the
+`ghs-context-explorer`), perform that dispatch and feed its output back into the
 named next ghs tool.
 
 ## Broken-Flow Recovery

@@ -43,7 +43,7 @@
 ## 核心特性
 
 - **完整六阶段工作流** — init → plan → sprint → code → status → archive，每步工具自带下一步指引。
-- **三角色计划调度器** — context-haiku（快照）→ plan-designer（设计）→ plan-reviewer（评审），
+- **三角色计划调度器** — context-explorer（快照）→ plan-designer（设计）→ plan-reviewer（评审），
   三个 subagent 各司其职，模型 ID 可独立配置。
 - **断线检测与恢复** — 基于 `status.json` 的阶段状态机自动检测 TODO 面板是否漂移，发出建设性提醒；
   `ghs-status` 随时可查，跨会话可从 `.ghs/progress.md` 恢复。
@@ -119,7 +119,7 @@ opencode plugin golden-hoop-spell-opencode --global
 ```
 1. ghs-init           → 初始化 .ghs/ 目录结构与 subagent 文件
 2. ghs-config         → 渲染 agent markdown（通常 init 已自动完成，改模型后需重跑）
-3. ghs-plan-start     → 启动三角色计划调度（派发 context-haiku subagent）
+3. ghs-plan-start     → 启动三角色计划调度（派发 context-explorer subagent）
 4. ghs-plan-review    → 三模式循环：snapshot → plan → review（含多轮修订）
 5. ghs-plan-finalize  → 评审通过后落盘计划到 .ghs/plans/
 6. ghs-sprint         → 将计划拆解为原子 feature，追加到 features.json
@@ -172,7 +172,7 @@ opencode plugin golden-hoop-spell-opencode --global
 |------|------|------|
 | `ghs-init` | 初始化 | 引导创建 `.ghs/features.json`、`.ghs/progress.md`、`.ghs/ghs.json`，复制 subagent 模板 + SKILL.md |
 | `ghs-config` | 配置 | 从 `.ghs/ghs.json` 读取模型 ID，渲染 / 更新 `.opencode/agents/ghs-*.md` 三份 agent 文件 |
-| `ghs-plan-start` | 规划 | 启动计划调度，探测 codegraph 可用性，派发 `ghs-context-haiku` subagent 提取架构快照 |
+| `ghs-plan-start` | 规划 | 启动计划调度，探测 codegraph 可用性，派发 `ghs-context-explorer` subagent 提取架构快照 |
 | `ghs-plan-review` | 规划 | 三模式核心循环：`snapshot`（解析快照→派发 designer）/ `plan`（解析设计→派发 reviewer）/ `review`（PASS→finalize / FAIL→修订） |
 | `ghs-plan-finalize` | 规划 | 评审通过后将计划落盘到 `.ghs/plans/<日期>-<slug>.md`，标记 `approved` |
 | `ghs-sprint` | 拆分 | 自动归档已完成 sprint，生成下一 sprint id，创建空 sprint 骨架，返回拆解 prompt |
@@ -194,7 +194,7 @@ opencode plugin golden-hoop-spell-opencode --global
 ```
 ghs-plan-start
   │  探测 codegraph 可用性（.codegraph/ 存在？）
-  └─▶ 派发 ghs-context-haiku subagent
+  └─▶ 派发 ghs-context-explorer subagent
         │  提取架构快照（codegraph MCP 工具 或 grep 兜底）
         └─▶ 输出 CONTEXT_SNAPSHOT 包裹的快照
               │
@@ -213,12 +213,15 @@ ghs-plan-finalize(plan_content=<定稿计划>)
   └─▶ 落盘到 .ghs/plans/，状态标记 approved
 ```
 
-- **ghs-context-haiku** — 快速提取项目架构上下文（用 `models.context` 配置的轻量模型）。
+- **ghs-context-explorer** — 快速提取项目架构上下文（用 `models.context` 配置的轻量模型）。
 - **ghs-plan-designer** — 将需求 + 快照转为可执行的技术计划（用 `models.designer`）。
 - **ghs-plan-reviewer** — 从架构视角评审计划，返回 PASS / FAIL（用 `models.reviewer`）。
 
 三个 subagent 的 prompt 模板位于 `src/prompts/`，agent markdown 模板位于 `shared/agents/*.md.template`，
-由 `ghs-config` 渲染到 `.opencode/agents/ghs-*.md` 供 OpenCode 在启动时加载。
+由 `ghs-config` 渲染到 `.opencode/agents/ghs-*.md` 供 OpenCode 在启动时加载。**agent 改名（或升级插件）
+后需重跑 `ghs-config` 重新渲染 `.opencode/agents/`，并重启 OpenCode**（agent markdown 仅启动加载、无热
+重载）；建议一并清理 `.opencode/agents/` 下残留的、与当前 agent 列表不再对应的旧名 agent md（orphan
+agent，功能无害但易混淆）。
 
 ---
 
