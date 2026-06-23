@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/parse_completion_signal.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/parse_completion_signal.py
+//   golden-hoop-spell/plugin/shared/scripts/parse_completion_signal.py
 //
 // Faithful port notes (plan §3.4 D4 — line-by-line port):
 //   - The Python source is both a library (`parse_signal` + 4 strategy helpers)

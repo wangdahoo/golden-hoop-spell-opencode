@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/init_project.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/init_project.py
+//   golden-hoop-spell/plugin/shared/scripts/init_project.py
 //
 // Faithful port notes:
 //   - JSON output uses `JSON.stringify(obj, null, 2)` which matches Python's

@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/parallel_utils.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/.claude/plugins/cache/golden-hoop-spell/golden-hoop-spell/0.4.0/shared/scripts/parallel_utils.py
+//   golden-hoop-spell/plugin/shared/scripts/parallel_utils.py
 //
 // Faithful port notes (plan §3.4 D4 — line-by-line port):
 //   - The Python source is both a library (`detect_cycles` /

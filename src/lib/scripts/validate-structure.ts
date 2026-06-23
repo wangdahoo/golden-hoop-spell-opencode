@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/validate_structure.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/validate_structure.py
+//   golden-hoop-spell/plugin/shared/scripts/validate_structure.py
 //
 // Faithful port notes:
 //   - ID-format patterns are anchored regexes ported verbatim:

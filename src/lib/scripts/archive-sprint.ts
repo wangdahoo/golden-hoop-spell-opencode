@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/archive_sprint.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/archive_sprint.py
+//   golden-hoop-spell/plugin/shared/scripts/archive_sprint.py
 //
 // Faithful port notes:
 //   - JSON output uses `JSON.stringify(obj, null, 2)` — matches Python's

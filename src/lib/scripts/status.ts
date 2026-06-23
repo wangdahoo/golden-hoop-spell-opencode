@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/status.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/status.py
+//   golden-hoop-spell/plugin/shared/scripts/status.py
 //
 // Faithful port notes:
 //   - The original script prints the formatted status to stdout. Here we

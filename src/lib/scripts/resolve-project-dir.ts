@@ -1,7 +1,7 @@
 // Port of golden-hoop-spell/plugin/shared/scripts/resolve_project_dir.py.
 //
 // Behavior source-of-truth:
-//   /Users/tom/github/golden-hoop-spell/plugin/shared/scripts/resolve_project_dir.py
+//   golden-hoop-spell/plugin/shared/scripts/resolve_project_dir.py
 //
 // Faithful port notes:
 //   - Walks up from the start directory looking for a `.ghs/` directory that
