@@ -23,7 +23,7 @@
 // test/todo-tracker.test.ts: mkdtemp under os.tmpdir() + realpathSync.
 
 import { expect, test, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,5 +163,115 @@ describe("plan-start workflow chrome (s1-feat-005)", () => {
     expect(result).not.toContain("STALE TODO:");
     expect(result).toContain("▶ NEXT ACTION:");
     expect(calls[0].title).toBe("[ghs] plan:designing");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// slug_seed → semantic planId (s? semantic-slug feature).
+//
+// `ghs-plan-start` accepts an optional `slug_seed` (an English ASCII kebab-case
+// slug the caller derives from the user's requirement description). The slug
+// replaces the legacy fixed `plan` stem in the plan_id (`{YYYY-MM-DD}-{slug}`)
+// and therefore in the on-disk status.json file name. These tests pin the
+// happy path, the sanitisation safety net, the CJK-collapse fallback, and the
+// backward-compatible empty / omitted behaviour.
+//
+// They reuse the module-level `mockCtxWithCapture` helper. A fresh temp dir is
+// created per test so the on-disk status.json file name can be asserted via
+// readdir without cross-test bleed.
+
+describe("plan-start slug_seed → semantic planId", () => {
+  let tempRoot: string;
+
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-ps-slug-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  /** Read the single `*-status.json` written under `.ghs/plans/` and parse it. */
+  async function readStatusJson(): Promise<{ plan_id: string }> {
+    const plansDirAbs = join(tempRoot, ".ghs", "plans");
+    const entries = await readdir(plansDirAbs);
+    const statusName = entries.find((f) => f.endsWith("-status.json"));
+    if (!statusName) {
+      throw new Error(`no *-status.json under ${plansDirAbs}; got: ${entries}`);
+    }
+    return JSON.parse(
+      await readFile(join(plansDirAbs, statusName), "utf8"),
+    ) as { plan_id: string };
+  }
+
+  test("uses a clean kebab slug_seed verbatim in plan_id + file name", async () => {
+    const sid = "ps-slug-clean";
+    const { ctx } = mockCtxWithCapture(tempRoot, sid);
+
+    const result = await planStartTool.execute(
+      { slug_seed: "todo-app" },
+      ctx,
+    );
+
+    // Result text surfaces the slug + plan_id.
+    expect(result).toContain("Slug:              todo-app");
+    expect(result).toMatch(/Plan id:\s+\d{4}-\d{2}-\d{2}-todo-app/);
+
+    // On-disk status.json content carries the semantic plan_id.
+    const status = await readStatusJson();
+    expect(status.plan_id).toMatch(/^\d{4}-\d{2}-\d{2}-todo-app$/);
+  });
+
+  test("sanitises a slug_seed with whitespace / casing / punctuation", async () => {
+    const sid = "ps-slug-sanitise";
+    const { ctx } = mockCtxWithCapture(tempRoot, sid);
+
+    const result = await planStartTool.execute(
+      { slug_seed: "  Todo App!!  " },
+      ctx,
+    );
+
+    // trim → "Todo App!!" → whitespace→- → "Todo-App!!" → non-safe→- →
+    // "Todo-App-" → strip trailing - → lower → "todo-app".
+    expect(result).toContain("Slug:              todo-app");
+    expect(result).toMatch(/Plan id:\s+\d{4}-\d{2}-\d{2}-todo-app/);
+  });
+
+  test("falls back to 'plan' when slug_seed is empty / whitespace-only", async () => {
+    const sid = "ps-slug-empty";
+    const { ctx } = mockCtxWithCapture(tempRoot, sid);
+
+    const result = await planStartTool.execute({ slug_seed: "   " }, ctx);
+
+    expect(result).toContain("Slug:              plan");
+    expect(result).toMatch(/Plan id:\s+\d{4}-\d{2}-\d{2}-plan/);
+  });
+
+  test("falls back to 'plan' when slug_seed is omitted (backward-compat)", async () => {
+    const sid = "ps-slug-omitted";
+    const { ctx } = mockCtxWithCapture(tempRoot, sid);
+
+    // No slug_seed at all — the legacy call shape used by every pre-existing
+    // test and any caller that hasn't been updated.
+    const result = await planStartTool.execute({}, ctx);
+
+    expect(result).toContain("Slug:              plan");
+    expect(result).toMatch(/Plan id:\s+\d{4}-\d{2}-\d{2}-plan/);
+  });
+
+  test("collapses CJK-only slug_seed to the 'plan' fallback", async () => {
+    const sid = "ps-slug-cjk";
+    const { ctx } = mockCtxWithCapture(tempRoot, sid);
+
+    // CJK chars are not filesystem-safe → all collapsed to `-` → stripped →
+    // empty → fallback `plan`. This is the deliberate safety net that pushes
+    // "按语义转 slug" responsibility onto the caller (LLM) rather than pulling
+    // in a pinyin dependency.
+    const result = await planStartTool.execute(
+      { slug_seed: "帮我设计一个待办应用" },
+      ctx,
+    );
+
+    expect(result).toContain("Slug:              plan");
+    expect(result).toMatch(/Plan id:\s+\d{4}-\d{2}-\d{2}-plan/);
   });
 });

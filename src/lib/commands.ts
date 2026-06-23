@@ -56,7 +56,18 @@ export const GHS_COMMANDS: Record<string, GhCommand> = {
     description: "启动 ghs 计划生成流程（上下文快照 → 计划设计 → 评审）",
     template:
       "Call the `ghs-plan-start` tool to start a new Golden Hoop Spell " +
-      "plan-generation loop.",
+      "plan-generation loop.\n\n" +
+      "Arguments: $ARGUMENTS\n\n" +
+      "Treat $ARGUMENTS as the user's requirement description for the plan. " +
+      "Before calling the tool, derive a short English ASCII kebab-case slug " +
+      "from that requirement (e.g. \"帮我设计一个 TODO APP\" → \"todo-app\", " +
+      "\"add OAuth login\" → \"oauth-login\") and pass it as `slug_seed`. " +
+      "Keep the original requirement description in chat context — it will be " +
+      "fed verbatim to the context-haiku / plan-designer / plan-reviewer " +
+      "subagents in subsequent steps, so do NOT pass the raw requirement as " +
+      "`slug_seed` (CJK / mixed-script collapses to an unhelpful slug). " +
+      "If $ARGUMENTS is empty, ask the user for the requirement before " +
+      "calling the tool.",
   },
   "ghs-sprint": {
     description: "创建新的 ghs sprint（分解为原子 feature）",

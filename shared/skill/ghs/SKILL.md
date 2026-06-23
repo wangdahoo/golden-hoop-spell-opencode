@@ -32,6 +32,33 @@ stage's tool before the earlier one has completed:
 `ghs-status` is safe to call at any point; every other tool belongs to a
 specific stage and its output names the next tool to call.
 
+## Plan-Start: Derive `slug_seed` from the Requirement
+
+`ghs-plan-start` takes an optional `slug_seed` that becomes the `<slug>` half
+of the plan_id (`{YYYY-MM-DD}-{slug}`) and therefore of every sibling file name
+under `.ghs/plans/`. A semantic slug makes the directory self-describing
+(`2026-06-23-todo-app-status.json` vs the legacy opaque `*-plan-status.json`).
+
+**Before calling `ghs-plan-start`, you MUST derive the slug yourself:**
+
+- Read the user's requirement description (the text after `/ghs-plan-start`).
+- Distil it into a short **English ASCII kebab-case** slug that captures the
+  core semantic: only `[a-z0-9-]`, hyphen-separated, lower-case.
+  - 「帮我设计一个 TODO APP」→ `todo-app`
+  - "add OAuth login" → `oauth-login`
+  - "重构认证模块" → `auth-refactor`
+- Pass it as `slug_seed`. Do **not** pass the raw requirement description —
+  CJK / mixed-script text collapses to an empty slug under the tool's
+  filesystem-safety sanitiser and silently falls back to `plan`.
+
+The **original requirement description stays in chat context** — it is fed
+verbatim to the `ghs-context-haiku` / `ghs-plan-designer` / `ghs-plan-reviewer`
+subagents in subsequent steps. `slug_seed` only names files; it does not carry
+the requirement.
+
+If `slug_seed` is empty or omitted, the tool falls back to the `plan` stem
+(backward-compatible, but loses the semantic benefit).
+
 ## Todo Discipline (mechanism one)
 
 The right-side TODO panel is the only durable view of workflow progress, and

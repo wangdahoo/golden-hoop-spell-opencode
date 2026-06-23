@@ -26,6 +26,7 @@ const EXPECTED_NAMES = [
 /** Commands that should reference `$ARGUMENTS` in their template. */
 const ARGUMENT_COMMANDS = [
   "ghs-init",
+  "ghs-plan-start",
   "ghs-sprint",
   "ghs-code",
   "ghs-archive",

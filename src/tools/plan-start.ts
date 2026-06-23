@@ -143,7 +143,8 @@ export const planStartTool = tool({
   description:
     "Start a new Golden Hoop Spell plan-generation loop (the plan dispatcher's entry point). " +
     "Resolves the project dir, probes whether `.codegraph/` is initialised (R1 runtime detection), " +
-    "writes the initial `.ghs/plans/<plan_id>-status.json` carrying `codegraph_available`, " +
+    "writes the initial `.ghs/plans/<plan_id>-status.json` (plan_id = `{YYYY-MM-DD}-{slug}`, " +
+    "where the slug is derived from the optional `slug_seed`) carrying `codegraph_available`, " +
     "and returns a Task-tool dispatch directive telling the AI to spawn the `ghs-context-haiku` " +
     "subagent to collect an architecture snapshot (codegraph-aware or grep-fallback prompt) " +
     "and then feed the result to `ghs-plan-review(snapshot)`.",
@@ -154,9 +155,20 @@ export const planStartTool = tool({
       .describe(
         "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
       ),
+    slug_seed: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "English ASCII kebab-case slug derived by the caller from the user's requirement " +
+          "description (e.g. \"a todo app\" → \"todo-app\"). Sanitised into the `<slug>` half " +
+          "of the plan_id (`{YYYY-MM-DD}-{slug}`). The raw requirement stays in chat context " +
+          "(fed to the context-haiku subagent) — do NOT pass the verbatim requirement here, " +
+          "since CJK / mixed-script text collapses to an unhelpful slug under sanitisation. " +
+          "Empty / missing → falls back to the stable `plan` stem (backward-compatible).",
+      ),
   },
   async execute(
-    args: { project_dir?: string },
+    args: { project_dir?: string; slug_seed?: string },
     ctx: ToolContext,
   ): Promise<string> {
     // (1) Resolve the project dir. Explicit arg wins; otherwise read it off
@@ -170,22 +182,20 @@ export const planStartTool = tool({
     // never crashes the tool; the worst case is we take the grep path.
     const codegraphAvailable = detectCodegraph(projectDir);
 
-    // (3) Generate the plan_id. We have no user-supplied title here (the tool
-    // is requirement-driven; the requirement itself is carried by the main
-    // chat AI, not by this tool's args), so we derive a placeholder slug from
-    // the current date + a stable `plan` stem. The AI / user can rename the
-    // final plan file at `ghs-plan-finalize` time; the status file name only
-    // needs to be unique per start, which the date prefix guarantees for a
-    // single-day loop.
-    //
-    // NOTE: we deliberately do NOT take a `requirement` arg — the dispatcher
-    // loop keeps the requirement in chat context (it is passed verbatim to the
-    // context-haiku subagent via the Task tool). The slug is therefore derived
-    // from the date alone; collisions within the same day are acceptable
-    // because each `ghs-plan-start` write simply overwrites the previous
-    // status file for that id (a fresh start resets the loop anyway).
+    // (3) Generate the plan_id. The slug half comes from `slug_seed` (an
+    // English ASCII kebab-case slug the caller derives from the user's
+    // requirement description — e.g. "a todo app" → "todo-app"). We do NOT
+    // take the raw requirement itself: the dispatcher keeps that in chat
+    // context (passed verbatim to the context-haiku subagent via the Task
+    // tool), and CJK / mixed-script requirements would collapse to an
+    // unhelpful slug under slugify. An empty / missing `slug_seed` falls back
+    // to the stable `plan` stem (backward-compatible with older callers /
+    // tests). With a semantic slug, same-day different-requirement starts no
+    // longer collide; same-day same-slug starts still overwrite (a fresh
+    // start resets the loop anyway).
     const now = new Date();
-    const planId = buildPlanId("plan", now);
+    const planId = buildPlanId(args.slug_seed?.trim() || "plan", now);
+    const slug = planId.replace(/^\d{4}-\d{2}-\d{2}-/, "");
 
     // (4) Write the initial status.json. `createInitialPlanStatus` gives us
     // the source-skill defaults (round 1, status `designing`, max_rounds 5,
@@ -248,6 +258,7 @@ export const planStartTool = tool({
     lines.push("");
     lines.push(`Project directory: ${projectDir}`);
     lines.push(`Plan id:           ${planId}`);
+    lines.push(`Slug:              ${slug}`);
     lines.push(`Status file:       ${statusPath}`);
     lines.push(`Round:             1 / ${status.max_rounds}`);
     lines.push(
