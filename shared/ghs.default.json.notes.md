@@ -7,8 +7,8 @@
 | 角色 | 字段 | 默认模型 | 选择理由 |
 |---|---|---|---|
 | 上下文提取子代理（context snapshot） | `models.context` | `zai-coding-plan/glm-4.5-air` | 上下文快照任务是结构化信息提取（扫描文件、抽取关键路径），不需要复杂推理，使用便宜/快速的小模型即可。Phase 0 spike 验证也使用同一模型，结果稳定。 |
-| 计划设计师子代理（plan designer） | `models.designer` | `zhipuai-coding-plan/glm-4.6` | 设计阶段需要较强的体系结构推理能力，使用能力更强的 GLM 4.6。 |
-| 计划评审子代理（plan reviewer） | `models.reviewer` | `zhipuai-coding-plan/glm-4.6` | 评审阶段同样需要扎实推理能力，与设计师保持同级以给出有价值的反对意见。 |
+| 计划设计师子代理（plan designer） | `models.designer` | `zhipuai-coding-plan/glm-5.1` | 设计阶段需要较强的体系结构推理能力，使用能力更强的 GLM 5.1。 |
+| 计划评审子代理（plan reviewer） | `models.reviewer` | `zhipuai-coding-plan/glm-5.1` | 评审阶段同样需要扎实推理能力，与设计师保持同级以给出有价值的反对意见。 |
 
 ## 与源插件 / 规划文档的差异
 
