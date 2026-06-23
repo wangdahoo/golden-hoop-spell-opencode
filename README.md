@@ -60,15 +60,15 @@
 
 ## 安装
 
-### 方式一：npm 安装（推荐发布场景）
+### 方式一：`opencode plugin` 命令（最简单）
 
 ```bash
-bun add golden-hoop-spell-opencode
-# 或
-npm install golden-hoop-spell-opencode
+opencode plugin golden-hoop-spell-opencode --global
 ```
 
-在项目的 `opencode.json` 中注册插件：
+该命令把包名写入全局配置 `~/.config/opencode/opencode.json` 的 `plugin` 数组，并将包下载缓存到 `~/.cache/opencode/packages/golden-hoop-spell-opencode@latest/`（别名 `opencode plug`，重启 OpenCode 后生效）。
+
+执行后配置文件中会自动添加插件条目：
 
 ```json
 {
@@ -77,7 +77,11 @@ npm install golden-hoop-spell-opencode
 }
 ```
 
-### 方式二：本地 `file:` 安装（开发 / 内部共享）
+### 方式二：本地安装（开发 / 未发布 / 内部共享）
+
+两种本地加载方式：
+
+**A. 引用本地路径**（`opencode.json` 的 `plugin` 数组写路径）：
 
 ```json
 {
@@ -85,6 +89,8 @@ npm install golden-hoop-spell-opencode
   "plugin": ["file:../path/to/golden-hoop-spell-opencode"]
 }
 ```
+
+**B. 放进插件目录**（启动时自动加载）：把入口文件放到 `.opencode/plugins/`（项目级）或 `~/.config/opencode/plugins/`（全局）。
 
 ### 合并 codegraph MCP（可选但推荐）
 
