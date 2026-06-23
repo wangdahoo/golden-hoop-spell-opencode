@@ -16,7 +16,7 @@
 /**
  * The sprint-planning instruction. Returned as part of the `ghs-sprint`
  * tool's output text so the AI immediately knows how to break the sprint
- * goal into atomic features and append them via `update-feature-status`.
+ * goal into atomic features and append them via `ghs-append-feature`.
  *
  * Length is kept ~500-1500 chars: enough to specify the feature schema,
  * atomic-feature criteria, AC format, dependency ordering, and complexity
@@ -24,7 +24,7 @@
  * For the full human-readable reference, see
  * shared/references/sprint-agent.md.
  */
-export const SPRINT_PLANNING_PROMPT = `Sprint 骨架已写入 features.json。接下来请把 sprint goal 拆成 atomic features，逐个用 update-feature-status 追加（status 初始为 pending）。详见 shared/references/sprint-agent.md。
+export const SPRINT_PLANNING_PROMPT = `Sprint 骨架已写入 features.json。接下来请把 sprint goal 拆成 atomic features，逐个用 ghs-append-feature 追加（status 默认为 pending，schema 校验 id/category/priority 等字段）。详见 shared/references/sprint-agent.md。
 
 拆分原则（每个 feature 必须同时满足）：
 - 原子性：单个 session 可完成（< 4 小时）

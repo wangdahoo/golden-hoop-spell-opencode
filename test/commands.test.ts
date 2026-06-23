@@ -141,6 +141,7 @@ describe("plugin SYSTEM_HINT regression (s1-feat-003)", () => {
       "ghs-plan-review",
       "ghs-plan-finalize",
       "ghs-sprint",
+      "ghs-append-feature",
       "ghs-code",
       "ghs-status",
       "ghs-archive",

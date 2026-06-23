@@ -18,7 +18,7 @@
 //   6. Writes the updated featuresData back to disk.
 //   7. Returns the `SPRINT_PLANNING_PROMPT` (s2-feat-002) plus a short
 //      summary, so the AI immediately knows how to decompose the sprint
-//      goal into atomic features and append them via `update-feature-status`.
+//      goal into atomic features and append them via `ghs-append-feature`.
 //
 // The tool is a thin wrapper composing three existing modules:
 //   - archive-sprint.ts  (s1-feat-008 port)
@@ -106,7 +106,7 @@ export const sprintTool = tool({
     "Create a new sprint skeleton in features.json. Auto-archives any already-completed sprints first, " +
     "auto-generates the next sprint id (s{N+1}, scanning active + archived sprints so ids never collide), " +
     "appends an empty sprint with status 'planning', writes it back to disk, and returns the sprint-planning " +
-    "prompt so the AI can decompose the goal into atomic features (which it then appends via update-feature-status).",
+    "prompt so the AI can decompose the goal into atomic features (which it then appends via ghs-append-feature).",
   args: {
     sprint_name: tool.schema
       .string()
@@ -203,8 +203,8 @@ export const sprintTool = tool({
     lines.push(`Sprint skeleton written to ${featuresPath} (status: planning, features: []).`);
     lines.push("");
     lines.push("Next: decompose the sprint goal into atomic features and append each via");
-    lines.push("`update-feature-status` (initial status: pending). Then flip the sprint status");
-    lines.push("to in_progress once you start coding.");
+    lines.push("`ghs-append-feature` (status defaults to pending). Once all features are appended,");
+    lines.push("update the sprint status to in_progress, then call `ghs-code` to start implementation.");
     lines.push("");
     lines.push("--- sprint-planning prompt ---");
     lines.push(SPRINT_PLANNING_PROMPT);
