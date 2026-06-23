@@ -59,7 +59,9 @@ import {
  * hand-off; this anchor is the concise reminder.
  */
 const NEXT_ACTION_CODE =
-  "dispatch the coding subagent(s) via the Task tool, then parse the completion signal and update feature status";
+  "dispatch coding subagent(s) via Task → call ghs-parse-completion-signal on each result → " +
+  "call ghs-update-feature-status with {feature_id, status} → re-call ghs-code (same mode) " +
+  "until it returns the '=== ghs-code: no ready features ===' banner";
 
 /**
  * Render `FEATURE_IMPL_PROMPT` with its two placeholders substituted.
@@ -148,8 +150,9 @@ export const codeTool = tool({
     "summary — telling the main AI to spawn an isolated coding subagent via the Task tool. " +
     "Pass `parallel=true` to also get conflict-free parallel batches (dispatch plan). Pin a specific " +
     "feature with `feature_id`. The tool does NOT spawn the subagent or write features.json status " +
-    "itself — the main AI dispatches via Task, then parses the subagent's completion signal " +
-    "(parse-completion-signal) and updates the feature status.",
+    "itself — after the subagent returns, the main AI calls ghs-parse-completion-signal then " +
+    "ghs-update-feature-status, then re-calls ghs-code until it returns the " +
+    "'=== ghs-code: no ready features ===' banner.",
   args: {
     feature_id: tool.schema
       .string()
@@ -409,7 +412,7 @@ function dispatchPinnedFeature(
       "Next: 用 Task tool 派发 coding subagent（派发 prompt 见下，已注入 project dir 与 feature_id），",
     );
     lines.push(
-      "subagent 返回后用 parse-completion-signal 解析其完成信号，再调 update-feature-status 更新该 feature 的 status。",
+      "subagent 返回后：调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 再次调 ghs-code（同 feature_id 或无参数）取下一个 ready feature，直到返回 '=== ghs-code: no ready features ===' banner。",
     );
     lines.push("");
     lines.push("--- feature-impl dispatch prompt ---");
@@ -507,7 +510,7 @@ function dispatchParallelPlan(
     "每个 feature 独立派发 coding subagent（各 Task call 互不依赖）。所有 subagent 返回后，",
   );
   lines.push(
-    "用 parse-completion-signal 逐个解析完成信号，再调 update-feature-status 更新对应 feature 的 status。",
+    "逐个调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 全部更新后再次调 ghs-code（parallel: true）取下一批，直到返回 '=== ghs-code: no ready features ===' banner。",
   );
   lines.push(
     "并行 git 守则：每个 subagent 显式 `git add <实现文件路径>` 做**恰好一次** commit（禁 `git add -A`/`add .`/`reset`，禁提交 `.ghs/*`），避免兄弟 commit 被 orphan。",
@@ -545,7 +548,7 @@ function dispatchSingleFeature(
     "Next: 用 Task tool 派发 coding subagent（派发 prompt 见下，已注入 project dir 与 feature_id），",
   );
   lines.push(
-    "subagent 返回后用 parse-completion-signal 解析其完成信号，再调 update-feature-status 更新该 feature 的 status。",
+    "subagent 返回后：调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 再次调 ghs-code（无参数）取下一个 ready feature，直到返回 '=== ghs-code: no ready features ===' banner。",
   );
   lines.push("");
   lines.push("--- feature-impl dispatch prompt ---");

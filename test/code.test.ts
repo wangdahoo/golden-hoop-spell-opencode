@@ -270,4 +270,37 @@ describe("code workflow chrome (s1-feat-005)", () => {
     expect(result).toContain("▶ NEXT ACTION:");
     expect(calls[0].metadata?.stale).toBe("fresh");
   });
+
+  test("s1-feat-003 AC: NEXT_ACTION_CODE embeds real tool names + loop + terminal banner", async () => {
+    await seedFeatures(projectDir, {
+      project: "test-project",
+      sprints: [
+        {
+          id: "s-loop",
+          status: "in_progress",
+          features: [
+            {
+              id: "s-loop-feat-001",
+              title: "Loop-instruction feature",
+              status: "pending",
+              dependencies: [],
+              files_affected: ["src/a.ts"],
+              acceptance_criteria: ["AC1"],
+            },
+          ],
+        },
+      ],
+      metadata: { version: "1.0.0" },
+    });
+
+    const { ctx } = mockCtxCaptured(projectDir, "code-loop-instruction-1");
+    const result = await codeTool.execute({ project_dir: projectDir }, ctx);
+
+    // NEXT_ACTION_CODE must reference the real tool names + the re-call loop
+    // + the exact terminal banner token (plan §3.2(a)).
+    expect(result).toContain("ghs-parse-completion-signal");
+    expect(result).toContain("ghs-update-feature-status");
+    expect(result).toContain("re-call ghs-code");
+    expect(result).toContain("=== ghs-code: no ready features ===");
+  });
 });

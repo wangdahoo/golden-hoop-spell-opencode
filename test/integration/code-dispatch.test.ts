@@ -62,6 +62,20 @@ async function seedFeatures(projectDir: string, data: FixtureData): Promise<void
   );
 }
 
+/**
+ * Assert every `parse-completion-signal` / `update-feature-status` occurrence
+ * in `result` carries the `ghs-` prefix (s1-feat-003 AC: no bare prose
+ * references). Counts the stem and the prefixed form — they must be equal.
+ */
+function expectNoBareToolStems(result: string): void {
+  const pcs = (result.match(/parse-completion-signal/g) || []).length;
+  const ghsPcs = (result.match(/ghs-parse-completion-signal/g) || []).length;
+  expect(pcs).toBe(ghsPcs);
+  const ufs = (result.match(/update-feature-status/g) || []).length;
+  const ghsUfs = (result.match(/ghs-update-feature-status/g) || []).length;
+  expect(ufs).toBe(ghsUfs);
+}
+
 describe("integration: ghs-code tool dispatch guidance (s4-feat-005)", () => {
   let projectDir: string;
 
@@ -113,6 +127,12 @@ describe("integration: ghs-code tool dispatch guidance (s4-feat-005)", () => {
     // (d) The rendered prompt references the temp project dir (substitution
     //     actually happened, not just absence of the placeholder token).
     expect(result).toContain(projectDir);
+    // (e) s1-feat-003: dispatch prose references real tool names + the
+    //     re-call loop + the terminal banner.
+    expect(result).toContain("ghs-parse-completion-signal");
+    expect(result).toContain("ghs-update-feature-status");
+    expect(result).toContain("=== ghs-code: no ready features ===");
+    expectNoBareToolStems(result);
   });
 
   test("parallel mode: lists ready features and presents a batch dispatch plan", async () => {
@@ -157,6 +177,50 @@ describe("integration: ghs-code tool dispatch guidance (s4-feat-005)", () => {
     // Parallel-specific batch framing (dispatch plan, not a single pin).
     expect(result).toContain("parallel dispatch plan");
     expect(result).toContain("Batch");
+    // s1-feat-003: dispatch prose references real tool names + the re-call
+    // loop + the terminal banner; no bare (ghs--less) tool stems.
+    expect(result).toContain("ghs-parse-completion-signal");
+    expect(result).toContain("ghs-update-feature-status");
+    expect(result).toContain("=== ghs-code: no ready features ===");
+    expectNoBareToolStems(result);
+  });
+
+  test("single feature (default path): returns dispatch guidance with real tool names + loop", async () => {
+    // Default dispatch (no feature_id, no parallel) → dispatchSingleFeature.
+    await seedFeatures(projectDir, {
+      project: "test-project",
+      sprints: [
+        {
+          id: "s-int",
+          status: "in_progress",
+          features: [
+            {
+              id: "s-int-feat-020",
+              title: "Default-path ready feature",
+              status: "pending",
+              dependencies: [],
+              files_affected: ["src/d.ts"],
+              acceptance_criteria: ["AC1"],
+            },
+          ],
+        },
+      ],
+      metadata: { version: "1.0.0" },
+    });
+
+    const result = await codeTool.execute(
+      { project_dir: projectDir },
+      mockToolContext(projectDir),
+    );
+
+    // The selected feature is surfaced.
+    expect(result).toContain("s-int-feat-020");
+    // s1-feat-003: dispatch prose references real tool names + the re-call
+    // loop + the terminal banner; no bare tool stems.
+    expect(result).toContain("ghs-parse-completion-signal");
+    expect(result).toContain("ghs-update-feature-status");
+    expect(result).toContain("=== ghs-code: no ready features ===");
+    expectNoBareToolStems(result);
   });
 
   test("no ready feature: returns the no-ready-features message", async () => {

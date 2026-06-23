@@ -45,7 +45,7 @@
  * without crowding it. For the full human-readable reference, see
  * `shared/references/coding-agent.md`.
  */
-export const FEATURE_IMPL_PROMPT = `实现本项目的一个 feature。用 Task tool 派发一个隔离的 coding subagent 完成端到端实现，返回的完成信号由 parse-completion-signal 解析。详见 shared/references/coding-agent.md。
+export const FEATURE_IMPL_PROMPT = `实现本项目的一个 feature。用 Task tool 派发一个隔离的 coding subagent 完成端到端实现，返回的完成信号由 ghs-parse-completion-signal tool 解析。详见 shared/references/coding-agent.md。
 
 派发前请替换两个占位符（ghs-code tool 已注入）：\`<PROJECT_DIR>\`（项目根绝对路径）与 \`<feature_id>\`（所选 feature 的 id）。prompt 内不含任何 inline feature 细节——subagent 自己从 features.json 读取。
 
@@ -75,4 +75,4 @@ This is an isolated task. Disregard prior context, assume nothing, read files fr
 
 语言策略（与 CLAUDE.md 一致）：commit message 与任何文档用中文正文；代码标识符、字段名、枚举值、文件路径、日志/错误信息、完成信号 token 用英文。
 
-收到 subagent 返回后，把原始输出按 Verification Phase 交给 parse-completion-signal 解析（\`status: completed | blocked | unknown\`），据此更新 features.json 与 progress.md。unknown 时走 Format Recovery 重试，耗尽后用 AskUserQuestion 让用户裁决。`;
+收到 subagent 返回后，把原始输出按 Verification Phase 交给 ghs-parse-completion-signal tool 解析（\`status: completed | blocked | unknown\`），据此调 ghs-update-feature-status 更新 features.json 与 progress.md。unknown 时走 Format Recovery 重试，耗尽后用 AskUserQuestion 让用户裁决。`;
