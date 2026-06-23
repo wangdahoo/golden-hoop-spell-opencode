@@ -183,6 +183,21 @@ describe("integration: ghs-code tool dispatch guidance (s4-feat-005)", () => {
     expect(result).toContain("ghs-update-feature-status");
     expect(result).toContain("=== ghs-code: no ready features ===");
     expectNoBareToolStems(result);
+
+    // s1-feat-004: shared template rendered ONCE (not N times — token bloat
+    // reduction). The "--- feature-impl dispatch prompt" header appears
+    // exactly 1 time regardless of how many features are in the batches.
+    const promptHeaderCount =
+      (result.match(/--- feature-impl dispatch prompt/g) || []).length;
+    expect(promptHeaderCount).toBe(1);
+    // The shared template contains the literal <feature_id> placeholder
+    // (NOT pre-substituted) — the main AI must replace it per dispatch.
+    expect(result).toContain("<feature_id>");
+    // Explicit "replace ALL <feature_id>" directive (Medium #4) —
+    // enumerate every occurrence so the AI doesn't miss one.
+    expect(result).toContain("所有");
+    expect(result).toContain("共 5 处");
+    expect(result).toContain("FEATURE COMPLETE: <feature_id>");
   });
 
   test("single feature (default path): returns dispatch guidance with real tool names + loop", async () => {

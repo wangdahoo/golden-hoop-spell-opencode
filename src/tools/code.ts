@@ -83,6 +83,22 @@ function renderFeatureImplPrompt(
 }
 
 /**
+ * Render FEATURE_IMPL_PROMPT once with <PROJECT_DIR> substituted but
+ * <feature_id> left as a literal placeholder. The main AI replaces ALL
+ * <feature_id> occurrences per Task dispatch call (see the explicit
+ * enumeration in dispatchParallelPlan).
+ *
+ * Used by `dispatchParallelPlan` to render the prompt template once (not per
+ * feature), collapsing the N× token bloat. `dispatchSingleFeature` /
+ * `dispatchPinnedFeature` keep the per-feature `renderFeatureImplPrompt`
+ * (single feature = one render = no bloat = pre-substituted for the AI to
+ * copy verbatim).
+ */
+function renderFeatureImplPromptShared(projectDir: string): string {
+  return FEATURE_IMPL_PROMPT.replace(/<PROJECT_DIR>/g, projectDir);
+}
+
+/**
  * Project a feature dict onto the small summary the dispatch text needs.
  *
  * Mirrors `summarizeFeature` from parallel-utils but also surfaces the
@@ -465,10 +481,13 @@ function dispatchPinnedFeature(
  * concurrently without merge conflicts.
  *
  * The dispatch plan lists every ready feature (so nothing is silently
- * dropped), groups them into batches, and ends with the shared FEATURE_IMPL
- * PROMPT (placeholders left as `<feature_id>` / `<PROJECT_DIR>`-filled —
- * rendered once per target in the per-feature block) so the AI has the exact
- * subagent prompt to hand to Task for each target.
+ * dropped), groups them into batches, and ends with the FEATURE_IMPL_PROMPT
+ * rendered ONCE as a shared template (`<PROJECT_DIR>` substituted,
+ * `<feature_id>` left as a literal placeholder). The main AI replaces ALL
+ * `<feature_id>` occurrences per Task dispatch call — the explicit "replace
+ * ALL" directive (Medium #4, plan §4.2) enumerates every occurrence so the
+ * AI doesn't miss one. Rendering once (not per feature) collapses the N×
+ * token bloat that accumulates across code-loop cycles.
  */
 function dispatchParallelPlan(
   ready: Feature[],
@@ -500,11 +519,25 @@ function dispatchParallelPlan(
       lines.push(`### ${brief.id} — ${brief.title}`);
       lines.push(formatBrief(brief));
       lines.push("");
-      lines.push("--- feature-impl dispatch prompt ---");
-      lines.push(renderFeatureImplPrompt(projectDir, brief.id));
-      lines.push("");
     }
   });
+
+  // Shared prompt template — rendered ONCE (not per feature) to avoid token
+  // bloat. The main AI replaces ALL <feature_id> occurrences per Task dispatch
+  // (see the explicit enumeration below). Medium #4 (plan §4.2).
+  lines.push("--- feature-impl dispatch prompt (shared template) ---");
+  lines.push(
+    "⚠️ 下方模板中 <feature_id> 为字面占位符，ghs-code 未预填。派发每个 feature 的 Task 前，" +
+    "必须将模板中【所有】<feature_id> 出现替换为目标 feature id（共 5 处，分布于 4 行）：",
+  );
+  lines.push("  1. feature 查找：id == \"<feature_id>\"");
+  lines.push("  2. commit message：(Feature: <feature_id>)");
+  lines.push("  3. ## Feature ID 段：<feature_id>");
+  lines.push("  4. 完成信号：FEATURE COMPLETE: <feature_id> 与 FEATURE BLOCKED: <feature_id>");
+  lines.push("  漏替换任一处会导致 subagent prompt 内部不一致 → parse 返回 unknown → 触发重试。");
+  lines.push("");
+  lines.push(renderFeatureImplPromptShared(projectDir));
+  lines.push("");
 
   lines.push(
     "每个 feature 独立派发 coding subagent（各 Task call 互不依赖）。所有 subagent 返回后，",
