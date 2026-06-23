@@ -298,6 +298,31 @@ describe("getStageSignature - single-step + unknown (s1-feat-002)", () => {
 });
 
 // =============================================================================
+// getStageSignature — new Cat-1/Cat-2 tools (s1-feat-006, plan §6 / Opt #4)
+// =============================================================================
+//
+// The three tools registered in sprint s1 (ghs-parse-completion-signal,
+// ghs-update-feature-status, ghs-append-feature) are single-step sub-
+// operations within the code / sprint stages. They must NOT be stage-tracked
+// (getStageSignature returns null), otherwise classifyStaleState would emit
+// false drift warnings when the main AI interleaves them between ghs-code /
+// ghs-sprint calls (plan §6 rationale).
+
+describe("getStageSignature - new single-step tools (s1-feat-006)", () => {
+  const newSingleStep = [
+    "ghs-parse-completion-signal",
+    "ghs-update-feature-status",
+    "ghs-append-feature",
+  ];
+  for (const toolName of newSingleStep) {
+    test(`${toolName} returns null`, async () => {
+      const sig = await getStageSignature(toolName, projectDir, {});
+      expect(sig).toBe(null);
+    });
+  }
+});
+
+// =============================================================================
 // classifyStaleState — judgment table four rows (AC #6)
 // =============================================================================
 //

@@ -164,7 +164,8 @@ export async function getStageSignature(
     return `code:default`;
   }
 
-  // init / config / sprint / status / archive / force-archive — single-step.
+  // init / config / sprint / append-feature / parse-completion-signal /
+  // update-feature-status / status / archive / force-archive — single-step.
   return null;
 }
 
