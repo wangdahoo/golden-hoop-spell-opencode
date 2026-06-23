@@ -38,6 +38,7 @@ import { planReviewTool } from "./tools/plan-review.ts";
 import { planFinalizeTool } from "./tools/plan-finalize.ts";
 import { codeTool } from "./tools/code.ts";
 import { parseCompletionSignalTool } from "./tools/parse-completion-signal.ts";
+import { updateFeatureStatusTool } from "./tools/update-feature-status.ts";
 import { GHS_COMMANDS } from "./lib/commands.ts";
 import { recordTodoTick, getStageSignature } from "./lib/todo-tracker.ts";
 
@@ -84,7 +85,7 @@ const DEFAULT_SESSION_ID = "_default";
  */
 const SYSTEM_HINT_TEXT =
   "Golden Hoop Spell (ghs) plugin — orchestrates a structured init → plan → sprint → code → status → archive workflow. " +
-  "Tools implemented: ghs-init, ghs-config, ghs-plan-start, ghs-plan-review, ghs-plan-finalize, ghs-sprint, ghs-code, ghs-parse-completion-signal, ghs-status, ghs-archive, ghs-force-archive. " +
+  "Tools implemented: ghs-init, ghs-config, ghs-plan-start, ghs-plan-review, ghs-plan-finalize, ghs-sprint, ghs-code, ghs-parse-completion-signal, ghs-update-feature-status, ghs-status, ghs-archive, ghs-force-archive. " +
   "Workflow order: ghs-init → ghs-config → ghs-plan-start → ghs-plan-review → ghs-plan-finalize → ghs-sprint → ghs-code → ghs-status → ghs-archive. " +
   "Model IDs for the 3 plan-dispatcher subagents are user-configurable via `.ghs/ghs.json`; after editing run `ghs-config` then restart OpenCode. " +
   "Slash commands /ghs-init, /ghs-config, /ghs-plan-start, /ghs-sprint, /ghs-code, /ghs-status, /ghs-archive, /ghs-force-archive are auto-registered on startup. " +
@@ -119,6 +120,7 @@ export const ghsPlugin: Plugin = async () => ({
     "ghs-sprint": sprintTool,
     "ghs-code": codeTool,
     "ghs-parse-completion-signal": parseCompletionSignalTool,
+    "ghs-update-feature-status": updateFeatureStatusTool,
     "ghs-status": statusTool,
     "ghs-archive": archiveTool,
     "ghs-force-archive": forceArchiveTool,

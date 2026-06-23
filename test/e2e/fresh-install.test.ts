@@ -28,7 +28,7 @@ import { join } from "node:path";
 
 import { ghsPlugin } from "../../src/plugin.ts";
 
-/** The ghs-* tools the plugin must expose (plan §3.4 D2 + s1-feat-001). */
+/** The ghs-* tools the plugin must expose (plan §3.4 D2 + s1-feat-001/002). */
 const EXPECTED_TOOLS = [
   "ghs-init",
   "ghs-config",
@@ -38,13 +38,14 @@ const EXPECTED_TOOLS = [
   "ghs-sprint",
   "ghs-code",
   "ghs-parse-completion-signal",
+  "ghs-update-feature-status",
   "ghs-status",
   "ghs-archive",
   "ghs-force-archive",
 ] as const;
 
 describe("s5-feat-006 fresh-install simulation", () => {
-  test("ghsPlugin exposes exactly the 11 ghs-* tools under hyphenated keys", async () => {
+  test("ghsPlugin exposes exactly the 12 ghs-* tools under hyphenated keys", async () => {
     // Invoke the plugin the way OpenCode's loader does: call it, read the
     // returned Hooks object. No OpenCode runtime / session input is required
     // (the plugin ignores its input — see src/plugin.ts).
@@ -53,7 +54,7 @@ describe("s5-feat-006 fresh-install simulation", () => {
     expect(hooks.tool).toBeDefined();
     const keys = Object.keys(hooks.tool ?? {}).sort();
 
-    // Exactly the 11 expected tools — no more, no fewer, no typos.
+    // Exactly the 12 expected tools — no more, no fewer, no typos.
     expect(keys).toEqual([...EXPECTED_TOOLS].sort());
 
     // Each entry must be a real tool definition (an object with an execute
