@@ -5,7 +5,7 @@
 // configurable model IDs. The user's `.ghs/ghs.json` overrides
 // `shared/ghs.default.json` on a per-field basis. The merged config drives
 // `syncAgents()`, which renders the three subagent markdown templates
-// (`ghs-context-haiku`, `ghs-plan-designer`, `ghs-plan-reviewer`) into
+// (`ghs-context-explorer`, `ghs-plan-designer`, `ghs-plan-reviewer`) into
 // `<projectDir>/.opencode/agents/` so opencode picks them up on next start.
 //
 // Spike 004 verified that `String.replaceAll()` over the template body +
@@ -56,7 +56,7 @@ const PLACEHOLDERS = {
  * *expected* to contain. Templates without placeholders pass through
  * unchanged (acceptance criterion #7).
  */
-const AGENT_NAMES = ["ghs-context-haiku", "ghs-plan-designer", "ghs-plan-reviewer"] as const;
+const AGENT_NAMES = ["ghs-context-explorer", "ghs-plan-designer", "ghs-plan-reviewer"] as const;
 type AgentName = (typeof AGENT_NAMES)[number];
 
 /** Resolve the default config path under the plugin root. */

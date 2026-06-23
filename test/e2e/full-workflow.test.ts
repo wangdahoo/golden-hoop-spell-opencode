@@ -15,7 +15,7 @@
 //     .opencode/agents/*.md synced by config; after archive the sprint moves
 //     into .ghs/archived/.
 //   - model-switch smoke: edit .ghs/ghs.json models.context → ghs-config →
-//     assert ghs-context-haiku.md frontmatter `model:` updated.
+//     assert ghs-context-explorer.md frontmatter `model:` updated.
 //   - temp-dir isolation via _helpers.ts; no real subagent / no real OpenCode.
 //
 // Distinct from the per-tool integration tests (plan-dispatch / code-dispatch /
@@ -68,13 +68,13 @@ import {
  */
 const DEFAULT_MODELS = {
   context: "zhipuai-coding-plan/glm-4.5-air",
-  designer: "zhipuai-coding-plan/glm-4.6",
-  reviewer: "zhipuai-coding-plan/glm-4.6",
+  designer: "zhipuai-coding-plan/glm-5.1",
+  reviewer: "zhipuai-coding-plan/glm-5.1",
 } as const;
 
 /** The three agent names ghs-config renders. */
 const AGENT_NAMES = [
-  "ghs-context-haiku",
+  "ghs-context-explorer",
   "ghs-plan-designer",
   "ghs-plan-reviewer",
 ] as const;
@@ -136,7 +136,7 @@ describe("e2e: full ghs plugin workflow (init → … → archive) (s5-feat-005)
     }
     // Each agent markdown carries its default model ID in the frontmatter.
     const ctxBody0 = await Bun.file(
-      join(projectDir, ".opencode", "agents", "ghs-context-haiku.md"),
+      join(projectDir, ".opencode", "agents", "ghs-context-explorer.md"),
     ).text();
     expect(ctxBody0).toContain(`model: ${DEFAULT_MODELS.context}`);
 
@@ -162,7 +162,7 @@ describe("e2e: full ghs plugin workflow (init → … → archive) (s5-feat-005)
     expect(status!.codegraph_available).toBe(false);
 
     // ========================================================================
-    // (4) [mock Task: ghs-context-haiku] → ghs-plan-review(snapshot).
+    // (4) [mock Task: ghs-context-explorer] → ghs-plan-review(snapshot).
     // ========================================================================
     const snapshot = snapshotBlob(longBody("Architecture snapshot for e2e"));
     const snapshotReview = await planReviewTool.execute(
@@ -328,7 +328,7 @@ describe("e2e: full ghs plugin workflow (init → … → archive) (s5-feat-005)
 
     // ========================================================================
     // (9b) Model-switch smoke (R3): edit .ghs/ghs.json models.context →
-    //      ghs-config → assert ghs-context-haiku.md frontmatter `model:`
+    //      ghs-config → assert ghs-context-explorer.md frontmatter `model:`
     //      updated. This is the ONE model-switch assertion this e2e test
     //      makes; fine-grained multi-model coverage is owned by
     //      test/integration/multi-model-orchestration.test.ts (s5-feat-003).
@@ -345,7 +345,7 @@ describe("e2e: full ghs plugin workflow (init → … → archive) (s5-feat-005)
       mockToolContext(projectDir),
     );
     const ctxBodyAfter = await Bun.file(
-      join(projectDir, ".opencode", "agents", "ghs-context-haiku.md"),
+      join(projectDir, ".opencode", "agents", "ghs-context-explorer.md"),
     ).text();
     expect(ctxBodyAfter).toContain(`model: ${switchedContextModel}`);
     // The other two agents are untouched by the context edit.

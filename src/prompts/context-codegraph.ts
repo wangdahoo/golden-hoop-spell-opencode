@@ -36,7 +36,7 @@
  * Kept to ~600-1200 chars. For the human-readable snapshot format reference,
  * see `shared/references/context-snapshot-guide.md`.
  */
-export const CONTEXT_CODEGRAPH_PROMPT = `检测到 \`.codegraph/\` 已初始化 —— 本轮 plan 走 codegraph 路径。请用 Task tool 派发 \`ghs-context-haiku\` subagent 收集项目上下文快照。subagent 应优先用 codegraph MCP 工具查询符号/调用图/数据流，仅在 graph 未覆盖具体实现细节时才补读源文件。详见 shared/references/context-snapshot-guide.md。
+export const CONTEXT_CODEGRAPH_PROMPT = `检测到 \`.codegraph/\` 已初始化 —— 本轮 plan 走 codegraph 路径。请用 Task tool 派发 \`ghs-context-explorer\` subagent 收集项目上下文快照。subagent 应优先用 codegraph MCP 工具查询符号/调用图/数据流，仅在 graph 未覆盖具体实现细节时才补读源文件。详见 shared/references/context-snapshot-guide.md。
 
 输入给 subagent（拼在 Task 派发的 prompt 里）：
 - 需求描述（用于做 relevance filter —— 只收录与需求可能相关的代码）

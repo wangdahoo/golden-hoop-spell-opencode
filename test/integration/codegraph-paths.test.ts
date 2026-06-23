@@ -115,7 +115,7 @@ describe("integration: codegraph runtime path selection (R1)", () => {
     expect(status).not.toBeNull();
     expect(status!.codegraph_available).toBe(true);
 
-    // Simulate the context-haiku subagent returning a snapshot, then feed it
+    // Simulate the context-explorer subagent returning a snapshot, then feed it
     // to ghs-plan-review(snapshot). The status rewrite must preserve the
     // codegraph_available flag (the path is chosen once at start and sticks
     // for the entire plan lifetime — plan §3.6 / §3.7).

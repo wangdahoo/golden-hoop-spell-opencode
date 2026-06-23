@@ -5,7 +5,7 @@
 //   (a) After ghs-init-equivalent seeding, `.ghs/ghs.json` and the 3 rendered
 //       `.opencode/agents/ghs-*.md` all exist and carry the default model IDs.
 //   (b) After editing `models.context` in `.ghs/ghs.json` and calling
-//       `ghs-config`, `ghs-context-haiku.md`'s `model` field updates.
+//       `ghs-config`, `ghs-context-explorer.md`'s `model` field updates.
 //   (c) When `.ghs/ghs.json` is missing, `ghs-config` falls back to plugin
 //       defaults (but the tool layer gates on `.ghs/ghs.json` presence and
 //       refuses — so here we assert the gate message; the default-fallback
@@ -43,7 +43,7 @@ const DEFAULT_MODELS = {
 
 /** The three agent names config.ts renders. */
 const AGENT_NAMES = [
-  "ghs-context-haiku",
+  "ghs-context-explorer",
   "ghs-plan-designer",
   "ghs-plan-reviewer",
 ] as const;
@@ -89,7 +89,7 @@ describe("integration: ghs-config agent model sync (R3)", () => {
       expect(existsSync(path)).toBe(true);
       const body = await Bun.file(path).text();
       const expected =
-        name === "ghs-context-haiku"
+        name === "ghs-context-explorer"
           ? DEFAULT_MODELS.context
           : name === "ghs-plan-designer"
             ? DEFAULT_MODELS.designer
@@ -101,7 +101,7 @@ describe("integration: ghs-config agent model sync (R3)", () => {
   });
 
   // (b) -------------------------------------------------------------------
-  test("(b) editing models.context then re-running ghs-config updates ghs-context-haiku.md", async () => {
+  test("(b) editing models.context then re-running ghs-config updates ghs-context-explorer.md", async () => {
     await writeGhsJson(projectDir, JSON.stringify({ models: DEFAULT_MODELS }));
     await configTool.execute(
       { project_dir: projectDir },
@@ -125,7 +125,7 @@ describe("integration: ghs-config agent model sync (R3)", () => {
 
     // The context agent's model field updated.
     const ctxBody = await Bun.file(
-      agentPath(projectDir, "ghs-context-haiku"),
+      agentPath(projectDir, "ghs-context-explorer"),
     ).text();
     expect(ctxBody).toContain(`model: ${customContext}`);
     expect(ctxBody).not.toContain(DEFAULT_MODELS.context);

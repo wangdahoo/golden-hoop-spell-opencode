@@ -63,7 +63,7 @@ export function longBody(prefix: string, minLen = 200): string {
   return prefix + "\n" + "x".repeat(minLen + 40);
 }
 
-/** A valid context-snapshot blob (ghs-context-haiku output family). */
+/** A valid context-snapshot blob (ghs-context-explorer output family). */
 export function snapshotBlob(body: string): string {
   return `<<<CONTEXT_SNAPSHOT_START>>>\n${body}\n<<<CONTEXT_SNAPSHOT_END>>>`;
 }

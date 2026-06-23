@@ -5,7 +5,7 @@ model: __GHS_MODEL_CONTEXT__
 hidden: true
 ---
 
-# ghs-context-haiku (fixture stub)
+# ghs-context-explorer (fixture stub)
 
 Test fixture for `src/lib/config.ts`'s `renderAgentTemplate` / `syncAgents`.
 

@@ -12,7 +12,7 @@ temperature: 0.1
 steps: 30
 ---
 
-# ghs-context-haiku
+# ghs-context-explorer
 
 You are extracting a condensed project context snapshot. Your output feeds the
 downstream plan designer and plan reviewer — keep it tight. The snapshot is a

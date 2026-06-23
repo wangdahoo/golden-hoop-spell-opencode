@@ -256,7 +256,7 @@ describe("execute snapshot mode", () => {
     );
 
     expect(result).toContain("解析失败");
-    expect(result).toContain("ghs-context-haiku");
+    expect(result).toContain("ghs-context-explorer");
     expect(result).toContain(".raw");
 
     // The raw response was persisted for diagnosis.

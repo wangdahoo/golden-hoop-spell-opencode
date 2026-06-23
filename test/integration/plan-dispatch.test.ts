@@ -8,7 +8,7 @@
 // through this loop:
 //
 //     ghs-plan-start
-//       → [Task: ghs-context-haiku] → ghs-plan-review(snapshot)
+//       → [Task: ghs-context-explorer] → ghs-plan-review(snapshot)
 //       → [Task: ghs-plan-designer] → ghs-plan-review(plan)
 //       → [Task: ghs-plan-reviewer] → ghs-plan-review(review, verdict=PASS)
 //       → ghs-plan-finalize
@@ -21,7 +21,7 @@
 // returned. The assertions verify:
 //
 //   1. Each review step's dispatch directive names the NEXT subagent the AI
-//      is supposed to spawn (context-haiku → plan-designer → plan-reviewer),
+//      is supposed to spawn (context-explorer → plan-designer → plan-reviewer),
 //      proving the 3-agent fan-out is wired correctly (R2 core).
 //   2. The model IDs in `.ghs/ghs.json` flow through to the rendered
 //      `.opencode/agents/ghs-*.md` (R3 — the model each Task-tool dispatch
@@ -66,7 +66,7 @@ const DEFAULT_MODELS = {
 
 /** The three agent names the dispatcher fans out to (R2). */
 const AGENT_NAMES = [
-  "ghs-context-haiku",
+  "ghs-context-explorer",
   "ghs-plan-designer",
   "ghs-plan-reviewer",
 ] as const;
@@ -107,7 +107,7 @@ describe("integration: plan dispatcher end-to-end (R2)", () => {
       expect(existsSync(agentPath)).toBe(true);
       const body = await Bun.file(agentPath).text();
       const expectedModel =
-        name === "ghs-context-haiku"
+        name === "ghs-context-explorer"
           ? DEFAULT_MODELS.context
           : name === "ghs-plan-designer"
             ? DEFAULT_MODELS.designer
@@ -116,13 +116,13 @@ describe("integration: plan dispatcher end-to-end (R2)", () => {
     }
 
     // (1) ghs-plan-start — writes initial status.json + dispatch directive
-    // for the FIRST subagent (ghs-context-haiku).
+    // for the FIRST subagent (ghs-context-explorer).
     const startResult = await planStartTool.execute(
       { project_dir: projectDir },
       mockToolContext(projectDir),
     );
-    // The directive tells the AI to spawn ghs-context-haiku via Task tool.
-    expect(startResult).toContain("ghs-context-haiku");
+    // The directive tells the AI to spawn ghs-context-explorer via Task tool.
+    expect(startResult).toContain("ghs-context-explorer");
     expect(startResult).toContain("Task tool");
     // Initial status persisted.
     let status = await findActivePlanStatus(projectDir);
@@ -130,8 +130,8 @@ describe("integration: plan dispatcher end-to-end (R2)", () => {
     expect(status!.round).toBe(1);
     expect(status!.status).toBe("designing");
 
-    // (2) [mock Task: ghs-context-haiku] → ghs-plan-review(snapshot).
-    // We stand in for the context-haiku subagent by feeding a canned
+    // (2) [mock Task: ghs-context-explorer] → ghs-plan-review(snapshot).
+    // We stand in for the context-explorer subagent by feeding a canned
     // delimited snapshot blob.
     const snapshot = snapshotBlob(longBody("Architecture snapshot"));
     const snapshotReview = await planReviewTool.execute(
@@ -269,7 +269,7 @@ describe("integration: plan dispatcher end-to-end (R2)", () => {
     // Each agent markdown now references the custom model — proving the
     // dispatcher's per-role model selection is driven by user config (R2 + R3).
     const ctxBody = await Bun.file(
-      join(projectDir, ".opencode", "agents", "ghs-context-haiku.md"),
+      join(projectDir, ".opencode", "agents", "ghs-context-explorer.md"),
     ).text();
     expect(ctxBody).toContain("model: custom/context-model");
 

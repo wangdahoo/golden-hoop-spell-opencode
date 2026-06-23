@@ -15,7 +15,7 @@
 //   2. Custom models   — all 3 roles carry distinct user-supplied model IDs.
 //   3. Partial custom  — some roles custom, others fall back to defaults.
 //
-// — asserting on the `.opencode/agents/ghs-{context-haiku,plan-designer,plan-reviewer}.md`
+// — asserting on the `.opencode/agents/ghs-{context-explorer,plan-designer,plan-reviewer}.md`
 // frontmatter `model:` field for each role. The dispatcher's per-role model
 // selection is driven entirely by these markdown files (the OpenCode Task tool
 // reads them at spawn time), so asserting their `model:` field IS asserting
@@ -58,7 +58,7 @@ const DEFAULT_MODELS = {
  * tool at spawn time.
  */
 const AGENTS = [
-  { name: "ghs-context-haiku", role: "context" as const },
+  { name: "ghs-context-explorer", role: "context" as const },
   { name: "ghs-plan-designer", role: "designer" as const },
   { name: "ghs-plan-reviewer", role: "reviewer" as const },
 ];
@@ -221,7 +221,7 @@ describe("integration: multi-model orchestration (R2/R3 model fan-out)", () => {
 
     // …while the two empty-string roles fall back to their defaults.
     const contextBody = await Bun.file(
-      agentPath(projectDir, "ghs-context-haiku"),
+      agentPath(projectDir, "ghs-context-explorer"),
     ).text();
     expect(extractModel(contextBody)).toBe(DEFAULT_MODELS.context);
     expect(contextBody).not.toContain(customDesigner);

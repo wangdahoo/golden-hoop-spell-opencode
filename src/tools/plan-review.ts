@@ -306,7 +306,7 @@ function buildRetryInstruction(args: {
 }): string {
   const subagent =
     args.mode === "snapshot"
-      ? "ghs-context-haiku"
+      ? "ghs-context-explorer"
       : args.mode === "plan"
         ? "ghs-plan-designer"
         : "ghs-plan-reviewer";

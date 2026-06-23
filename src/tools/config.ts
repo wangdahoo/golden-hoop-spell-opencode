@@ -33,7 +33,7 @@ import { resolveProjectDir } from "../lib/project.js";
 // Authoritative agent names — must match `AGENT_NAMES` in src/lib/config.ts.
 // Kept in sync so the dry-run preview enumerates the exact same files that a
 // real sync would write.
-const AGENTS = ["ghs-context-haiku", "ghs-plan-designer", "ghs-plan-reviewer"] as const;
+const AGENTS = ["ghs-context-explorer", "ghs-plan-designer", "ghs-plan-reviewer"] as const;
 
 /**
  * Build the structured success message returned by a real (non-dry-run)
@@ -109,7 +109,7 @@ async function formatDryRun(
  */
 export const configTool = tool({
   description:
-    "Regenerate the ghs-* subagent markdown files (.opencode/agents/ghs-{context-haiku,plan-designer,plan-reviewer}.md) " +
+    "Regenerate the ghs-* subagent markdown files (.opencode/agents/ghs-{context-explorer,plan-designer,plan-reviewer}.md) " +
     "from the user's .ghs/ghs.json config with field-level fallback to plugin defaults. " +
     "Use this after editing .ghs/ghs.json to change the model IDs used by the plan dispatcher's three roles. " +
     "OpenCode loads agents only at startup, so you must restart your session after running this. " +

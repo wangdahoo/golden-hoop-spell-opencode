@@ -62,13 +62,13 @@ const DEFAULT_CONFIG_SRC = join(REPO_ROOT, "shared", "ghs.default.json");
 /** The default model IDs copied verbatim from `shared/ghs.default.json`. */
 const DEFAULT_MODELS = {
   context: "zhipuai-coding-plan/glm-4.5-air",
-  designer: "zhipuai-coding-plan/glm-4.6",
-  reviewer: "zhipuai-coding-plan/glm-4.6",
+  designer: "zhipuai-coding-plan/glm-5.1",
+  reviewer: "zhipuai-coding-plan/glm-5.1",
 } as const;
 
 /** The three agent names config.ts knows how to render. */
 const AGENT_NAMES = [
-  "ghs-context-haiku",
+  "ghs-context-explorer",
   "ghs-plan-designer",
   "ghs-plan-reviewer",
 ] as const;
@@ -80,7 +80,7 @@ const AGENT_NAMES = [
  * set without mutating it.
  */
 const NATIVE_PLACEHOLDER: Record<string, string> = {
-  "ghs-context-haiku": "__GHS_MODEL_CONTEXT__",
+  "ghs-context-explorer": "__GHS_MODEL_CONTEXT__",
   "ghs-plan-designer": "__GHS_MODEL_DESIGNER__",
   "ghs-plan-reviewer": "__GHS_MODEL_REVIEWER__",
 };
@@ -91,7 +91,7 @@ const NATIVE_PLACEHOLDER: Record<string, string> = {
  * matching placeholder).
  */
 const NATIVE_MODEL_KEY: Record<string, keyof GhsConfig["models"]> = {
-  "ghs-context-haiku": "context",
+  "ghs-context-explorer": "context",
   "ghs-plan-designer": "designer",
   "ghs-plan-reviewer": "reviewer",
 };

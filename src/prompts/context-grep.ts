@@ -37,7 +37,7 @@
  * Kept to ~600-1200 chars. For the human-readable snapshot format reference,
  * see `shared/references/context-snapshot-guide.md`.
  */
-export const CONTEXT_GREP_PROMPT = `未检测到 \`.codegraph/\` —— 本轮 plan 走 grep 回退路径（无 codegraph MCP 工具可用）。请用 Task tool 派发 \`ghs-context-haiku\` subagent 收集项目上下文快照。subagent 用 \`read\` / \`glob\` / \`grep\`（read-only \`bash\`）手动遍历代码库构建快照。详见 shared/references/context-snapshot-guide.md。
+export const CONTEXT_GREP_PROMPT = `未检测到 \`.codegraph/\` —— 本轮 plan 走 grep 回退路径（无 codegraph MCP 工具可用）。请用 Task tool 派发 \`ghs-context-explorer\` subagent 收集项目上下文快照。subagent 用 \`read\` / \`glob\` / \`grep\`（read-only \`bash\`）手动遍历代码库构建快照。详见 shared/references/context-snapshot-guide.md。
 
 输入给 subagent（拼在 Task 派发的 prompt 里）：
 - 需求描述（用于做 relevance filter —— 只收录与需求可能相关的代码）
