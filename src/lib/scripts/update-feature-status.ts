@@ -161,7 +161,25 @@ export function updateFeatureStatus(
   const updatedFeatures = features.slice();
   updatedFeatures[featureIndex] = updatedFeature;
 
-  const updatedSprint: Sprint = { ...targetSprint, features: updatedFeatures };
+  // Sprint-completion promotion: when the updated feature makes EVERY feature
+  // in its owning sprint `completed` (sprint non-empty), flip the sprint's own
+  // `status` to `completed`. This is the ONLY place a sprint transitions to
+  // completed — without it the sprint lingers in `in_progress` after the last
+  // feature ships, and `ghs-archive` (which keys on `status === "completed"`)
+  // can never pick it up. Promotion is one-way: a sprint that is not fully
+  // completed keeps whatever status it already had (never demoted here — same
+  // no-transition-guard stance as feature statuses). `every` includes the
+  // just-updated feature, so this branch can only fire when the new status is
+  // `completed`.
+  const allCompleted =
+    updatedFeatures.length > 0 &&
+    updatedFeatures.every((f) => f.status === "completed");
+
+  const updatedSprint: Sprint = {
+    ...targetSprint,
+    features: updatedFeatures,
+    ...(allCompleted ? { status: "completed" } : {}),
+  };
   const updatedSprints = sprints.slice();
   updatedSprints[sprintIndex] = updatedSprint;
 

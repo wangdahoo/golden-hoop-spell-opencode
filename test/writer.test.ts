@@ -313,6 +313,94 @@ describe("updateFeatureStatus (s2-feat-001)", () => {
     const outSibling = findFeature(out, "s2-feat-000");
     expect(outSibling).toBe(origSibling);
   });
+
+  // (f) Sprint-completion promotion -------------------------------------------
+  // Marking the LAST incomplete feature completed must promote the owning
+  // sprint's status to "completed" — the only place a sprint transitions to
+  // completed. Without this the sprint lingers in_progress and ghs-archive
+  // (which keys on status==="completed") can never pick it up.
+  test("(f) promotes the owning sprint to completed when its last feature completes", () => {
+    const data = {
+      project: { name: "p" },
+      sprints: [
+        {
+          id: "s9",
+          name: "Sprint Nine",
+          goal: "g",
+          status: "in_progress",
+          created_at: "2026-01-01",
+          features: [
+            { id: "s9-feat-001", title: "A", status: "completed" },
+            { id: "s9-feat-002", title: "B", status: "in_progress" },
+          ],
+        },
+      ],
+      metadata: {},
+    };
+    const out = updateFeatureStatus(data, {
+      feature_id: "s9-feat-002",
+      status: "completed",
+    });
+    expect(findFeature(out, "s9-feat-002").status).toBe("completed");
+    const sprint = (out.sprints as Array<Record<string, unknown>>)[0];
+    expect(sprint.status).toBe("completed");
+  });
+
+  test("(f2) does NOT promote the sprint when a sibling feature is still incomplete", () => {
+    const data = {
+      project: { name: "p" },
+      sprints: [
+        {
+          id: "s9",
+          name: "Sprint Nine",
+          goal: "g",
+          status: "in_progress",
+          created_at: "2026-01-01",
+          features: [
+            { id: "s9-feat-001", title: "A", status: "pending" },
+            { id: "s9-feat-002", title: "B", status: "in_progress" },
+          ],
+        },
+      ],
+      metadata: {},
+    };
+    const out = updateFeatureStatus(data, {
+      feature_id: "s9-feat-002",
+      status: "completed",
+    });
+    const sprint = (out.sprints as Array<Record<string, unknown>>)[0];
+    // s9-feat-001 still pending → sprint is not fully completed → stays as-is.
+    expect(sprint.status).toBe("in_progress");
+  });
+
+  test("(f3) never demotes: regressing a feature does not lower a completed sprint", () => {
+    const data = {
+      project: { name: "p" },
+      sprints: [
+        {
+          id: "s9",
+          name: "Sprint Nine",
+          goal: "g",
+          status: "completed",
+          created_at: "2026-01-01",
+          features: [
+            { id: "s9-feat-001", title: "A", status: "completed" },
+            { id: "s9-feat-002", title: "B", status: "completed" },
+          ],
+        },
+      ],
+      metadata: {},
+    };
+    const out = updateFeatureStatus(data, {
+      feature_id: "s9-feat-001",
+      status: "pending",
+    });
+    expect(findFeature(out, "s9-feat-001").status).toBe("pending");
+    const sprint = (out.sprints as Array<Record<string, unknown>>)[0];
+    // One-way promotion only — no transition-direction guard (same stance as
+    // feature statuses). The sprint keeps its completed status.
+    expect(sprint.status).toBe("completed");
+  });
 });
 
 /** Locate a feature by id across all sprints in `data`. Throws if missing. */

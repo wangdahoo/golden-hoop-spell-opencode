@@ -92,10 +92,59 @@ export const updateFeatureStatusTool = tool({
 
     await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
 
-    return [
+    // Detect sprint-completion promotion: the pure writer flips the owning
+    // sprint's status to "completed" when its last feature completes. Compare
+    // that sprint's status before/after so the AI is told the sprint is now
+    // ready to archive (it otherwise has no signal — ghs-code just reports
+    // "no ready features" without persisting anything).
+    const before = findOwningSprint(featuresData, args.feature_id);
+    const after = findOwningSprint(updated, args.feature_id);
+    const promoted =
+      before !== null &&
+      after !== null &&
+      before.status !== "completed" &&
+      after.status === "completed";
+
+    const lines = [
       `✅ Feature ${args.feature_id} status updated → ${args.status}.`,
       "",
       `Written to ${featuresPath}`,
-    ].join("\n");
+    ];
+    if (promoted) {
+      lines.push("");
+      lines.push(
+        `Sprint ${after!.id} 的所有 feature 已完成，sprint 状态已置为 completed —— 可用 \`ghs-archive\` 归档该 sprint。`,
+      );
+    }
+    return lines.join("\n");
   },
 });
+
+/**
+ * Locate the sprint that owns `featureId` and return its id + status.
+ *
+ * Used by {@link updateFeatureStatusTool.execute} to detect whether the pure
+ * writer just promoted the owning sprint to `completed`. Returns `null` when
+ * the feature is not found (which would already have thrown inside the pure
+ * writer, so this is purely defensive).
+ */
+function findOwningSprint(
+  data: Record<string, unknown>,
+  featureId: string,
+): { id: string; status: string } | null {
+  const sprints = Array.isArray(data.sprints)
+    ? (data.sprints as Record<string, unknown>[])
+    : [];
+  for (const sprint of sprints) {
+    const feats = Array.isArray(sprint.features)
+      ? (sprint.features as Record<string, unknown>[])
+      : [];
+    if (feats.some((f) => f.id === featureId)) {
+      return {
+        id: String(sprint.id ?? ""),
+        status: String(sprint.status ?? ""),
+      };
+    }
+  }
+  return null;
+}

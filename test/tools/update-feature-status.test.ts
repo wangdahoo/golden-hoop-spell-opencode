@@ -280,4 +280,32 @@ describe("ghs-update-feature-status tool (s1-feat-002)", () => {
     const written = await readFeatures(projectDir);
     expect(findFeature(written, "s1-feat-001").status).toBe("pending");
   });
+
+  // AC #7: last feature completed → sprint promoted + archive hint -----------
+  test("AC#7 promotes the owning sprint to completed (and hints archive) when its last feature completes", async () => {
+    await seedFeatures(projectDir, {
+      project: { name: "test-project" },
+      sprints: [
+        {
+          id: "s1",
+          status: "in_progress",
+          features: [
+            { id: "s1-feat-001", title: "A", status: "completed" },
+            { id: "s1-feat-002", title: "B", status: "in_progress" },
+          ],
+        },
+      ],
+      metadata: {},
+    });
+
+    const out = await updateFeatureStatusTool.execute(
+      { feature_id: "s1-feat-002", status: "completed", project_dir: projectDir },
+      mockCtx(projectDir),
+    );
+
+    expect(out).toContain("completed");
+    expect(out).toContain("ghs-archive");
+    const written = await readFeatures(projectDir);
+    expect(written.sprints[0].status).toBe("completed");
+  });
 });
