@@ -48,6 +48,7 @@ import {
   writePlanStatus,
   plansDir,
   stagingPath,
+  deleteStagingFile,
   type PlanStatus,
   type PlanStatusValue,
   type StagingKind,
@@ -587,6 +588,14 @@ async function handleSnapshotMode(args: {
   // Success — persist the snapshot.
   await persistArtefact(projectDir, status.context_file, result.content, result);
 
+  // The staging file's only job was to bypass the truncating Task-return
+  // channel; now that the cleaned `-context.md` artefact is on disk it is a
+  // redundant near-duplicate. Drop it unless the debug flag asks to keep raw
+  // subagent output for post-mortem inspection.
+  if (!status.keep_raw_on_success) {
+    await deleteStagingFile(projectDir, status.plan_id, "snapshot");
+  }
+
   // Tier 2 context-sizing guard: warn when the extracted snapshot is
   // oversize (it almost certainly over-quotes a large input and will bloat
   // every downstream prompt). Non-blocking — best-effort nudge to re-run
@@ -685,6 +694,14 @@ async function handlePlanMode(args: {
   }
 
   await persistArtefact(projectDir, status.plan_file, result.content, result);
+
+  // Redundant staging file (see handleSnapshotMode) — drop on success unless
+  // the debug flag retains raw subagent output. NB: on a revise loop the
+  // designer re-writes `.plan.raw.md` next round, so deleting here does not
+  // starve a future round.
+  if (!status.keep_raw_on_success) {
+    await deleteStagingFile(projectDir, status.plan_id, "plan");
+  }
 
   const nextStatus: PlanStatus = {
     ...status,
@@ -813,6 +830,14 @@ async function handleReviewMode(args: {
 
   // We have a usable review — persist it + record review_file on the status.
   await persistArtefact(projectDir, reviewFile, result.content, result);
+
+  // Redundant staging file (see handleSnapshotMode) — drop on success unless
+  // the debug flag retains raw subagent output. Not cleared on the retry
+  // branch above: there a parse failed and the raw record is the only audit
+  // trail, so it stays.
+  if (!status.keep_raw_on_success) {
+    await deleteStagingFile(projectDir, status.plan_id, "review");
+  }
 
   if (verdict === "PASS") {
     const nextStatus: PlanStatus = {

@@ -23,7 +23,7 @@
 
 import { z } from "zod";
 import { resolve } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 
 // -----------------------------------------------------------------------------
 // Schema
@@ -172,6 +172,37 @@ export function stagingPath(
   kind: StagingKind,
 ): string {
   return resolve(plansDir(projectDir), `${planId}.${kind}.raw.md`);
+}
+
+/**
+ * Best-effort deletion of a subagent's `.<kind>.raw.md` staging file.
+ *
+ * Once `ghs-plan-review` has read a subagent's delimited output off its
+ * staging file and persisted the cleaned artefact (`<plan_id>-context.md` /
+ * `<plan_id>.md` / `<plan_id>-review.md`) via `persistArtefact`, the staging
+ * file is a redundant near-duplicate — same payload plus the START/END
+ * markers — that is never read again on the happy path. Leaving three of
+ * them behind per plan litters `.ghs/plans/` with stale copies. This helper
+ * removes the staging file so the cleaned artefact stays the single source.
+ *
+ * Best-effort and never throws: a missing file (ENOENT — the legacy inline
+ * path where a caller pasted the full text never wrote one) and any other
+ * failure (permissions, etc.) are swallowed so they cannot poison the
+ * plan-review success path — the cleaned artefact is already safely on disk.
+ * Callers gate the call on `!keep_raw_on_success` so that debug flag retains
+ * its documented "keep the raw subagent output" escape hatch.
+ */
+export async function deleteStagingFile(
+  projectDir: string,
+  planId: string,
+  kind: StagingKind,
+): Promise<void> {
+  try {
+    await unlink(stagingPath(projectDir, planId, kind));
+  } catch {
+    // ENOENT (legacy inline path wrote no staging file) or a permission
+    // error: both non-fatal — the cleaned artefact is already on disk.
+  }
 }
 
 // -----------------------------------------------------------------------------

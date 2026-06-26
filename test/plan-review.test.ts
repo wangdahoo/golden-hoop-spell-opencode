@@ -464,6 +464,111 @@ describe("execute snapshot mode — file-transport (Tier 1)", () => {
 });
 
 // -----------------------------------------------------------------------------
+// execute — staging file cleanup after a successful parse
+// ----------------------------------------------------------------------------
+
+describe("execute — staging file cleanup on success", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-cleanup-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("plan mode: deletes the .plan.raw.md staging file on success (keep_raw_on_success=false)", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+    const staging = stagingPath(tempRoot, status.plan_id, "plan");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, planBlob(longBody("# Plan from staging")));
+
+    const result = await planReviewTool.execute(
+      { plan: "PLAN DESIGN COMPLETE" },
+      mockCtx(tempRoot),
+    );
+    expect(result).toContain("Plan 已提取");
+
+    // Cleaned artefact is the single source; the raw staging copy is gone.
+    expect(await Bun.file(staging).exists()).toBe(false);
+    expect(
+      await Bun.file(join(plansDir(tempRoot), status.plan_file)).exists(),
+    ).toBe(true);
+  });
+
+  test("plan mode: keeps the .plan.raw.md staging file when keep_raw_on_success=true (debug)", async () => {
+    const status = baselineStatus({
+      status: "designing",
+      keep_raw_on_success: true,
+    });
+    await writePlanStatus(tempRoot, status);
+    const staging = stagingPath(tempRoot, status.plan_id, "plan");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, planBlob(longBody("# Plan from staging")));
+
+    await planReviewTool.execute(
+      { plan: "PLAN DESIGN COMPLETE" },
+      mockCtx(tempRoot),
+    );
+
+    // Debug flag retains the raw subagent output for post-mortem inspection.
+    expect(await Bun.file(staging).exists()).toBe(true);
+  });
+
+  test("snapshot mode: deletes the .snapshot.raw.md staging file on success", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+    const staging = stagingPath(tempRoot, status.plan_id, "snapshot");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, snapshotBlob(longBody("Arch snapshot")));
+
+    const result = await planReviewTool.execute(
+      { snapshot: "CONTEXT SNAPSHOT COMPLETE" },
+      mockCtx(tempRoot),
+    );
+    expect(result).toContain("Context snapshot 已提取");
+    expect(await Bun.file(staging).exists()).toBe(false);
+    expect(
+      await Bun.file(join(plansDir(tempRoot), status.context_file)).exists(),
+    ).toBe(true);
+  });
+
+  test("review mode: deletes the .review.raw.md staging file on a PASS verdict", async () => {
+    const status = baselineStatus({ status: "reviewing" });
+    await writePlanStatus(tempRoot, status);
+    const staging = stagingPath(tempRoot, status.plan_id, "review");
+    await mkdir(plansDir(tempRoot), { recursive: true });
+    await writeFile(staging, reviewBlob(longBody("Review looks good"), "PASS"));
+
+    const result = await planReviewTool.execute(
+      { review: "PLAN REVIEW COMPLETE" },
+      mockCtx(tempRoot),
+    );
+    expect(result).toContain("Review PASS");
+    expect(await Bun.file(staging).exists()).toBe(false);
+    const reviewFile = `${status.plan_id}-review.md`;
+    expect(
+      await Bun.file(join(plansDir(tempRoot), reviewFile)).exists(),
+    ).toBe(true);
+  });
+
+  test("no staging file written (legacy inline path) → cleanup is a safe no-op", async () => {
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+    // No staging file at all; caller pasted the complete delimited text inline.
+    const result = await planReviewTool.execute(
+      { plan: planBlob(longBody("# Inline-only path")) },
+      mockCtx(tempRoot),
+    );
+    expect(result).toContain("Plan 已提取");
+    // Cleaned artefact present; nothing to delete (no throw, no artefact loss).
+    expect(
+      await Bun.file(join(plansDir(tempRoot), status.plan_file)).exists(),
+    ).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // execute — review mode (AC #3 + AC #5 round counter)
 // -----------------------------------------------------------------------------
 
