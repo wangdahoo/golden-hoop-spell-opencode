@@ -107,7 +107,7 @@ Check all acceptance criteria:
 
 ## Parallel Mode
 
-When invoked with `--parallel`, the Coding Agent switches to parallel orchestration mode. Instead of implementing one feature at a time, it analyzes the dependency graph and dispatches subagents to implement multiple features concurrently.
+Parallel orchestration is the **default** for `ghs-code`. Instead of implementing one feature at a time, the tool analyzes the dependency graph and returns conflict-free batches so the orchestrator can dispatch subagents to implement multiple features concurrently. Invoke single-feature mode explicitly with `parallel: false` (auto-pick the first ready feature) or pin a feature with `feature_id`.
 
 ### Pre-flight Checks
 
@@ -139,7 +139,7 @@ Perform these checks in order before starting orchestration:
 
 #### Step 1: Identify Ready Features and Build Batches
 
-When dispatched with `parallel=true`, the `ghs-code` tool computes conflict-free parallel batches internally (via `src/lib/scripts/parallel-utils.ts`). It reads `.ghs/features.json`, detects dependency cycles, identifies features whose dependencies are all completed, and groups them into batches that respect file-level conflicts, then returns the batch plan as structured text for the orchestrator to dispatch.
+By default (parallel batch mode), the `ghs-code` tool computes conflict-free parallel batches internally (via `src/lib/scripts/parallel-utils.ts`). It reads `.ghs/features.json`, detects dependency cycles, identifies features whose dependencies are all completed, and groups them into batches that respect file-level conflicts, then returns the batch plan as structured text for the orchestrator to dispatch.
 
 The batching logic enforces these rules:
 - Only `pending` features with all dependencies `completed` are considered ready

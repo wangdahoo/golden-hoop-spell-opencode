@@ -24,8 +24,9 @@ stage's tool before the earlier one has completed:
    while a plan is mid-flight.
 4. `ghs-sprint` — decompose the finalized plan into atomic features
    (appended to `.ghs/features.json`).
-5. `ghs-code` — implement ONE feature per session (or a conflict-free batch
-   in parallel mode).
+5. `ghs-code` — implement features **batch-by-batch by default** (conflict-
+   free parallel batches); pass `parallel: false` for a single feature, or pin
+   one with `feature_id`.
 6. `ghs-status` — read-only progress check at any time.
 7. `ghs-archive` / `ghs-force-archive` — archive completed sprints.
 

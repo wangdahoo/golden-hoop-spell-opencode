@@ -164,9 +164,11 @@ export const codeTool = tool({
     "sprint's ready features (status pending AND all dependencies completed), and returns LLM-facing " +
     "dispatch guidance embedding the FEATURE_IMPL_PROMPT plus the selected feature's id/title/AC " +
     "summary — telling the main AI to spawn an isolated coding subagent via the Task tool. " +
-    "Pass `parallel=true` to also get conflict-free parallel batches (dispatch plan). Pin a specific " +
-    "feature with `feature_id`. The tool does NOT spawn the subagent or write features.json status " +
-    "itself — after the subagent returns, the main AI calls ghs-parse-completion-signal then " +
+    "Parallel batch dispatch is the DEFAULT: the tool returns ALL ready features grouped into " +
+    "conflict-free batches (a dispatch plan) so features are implemented batch-by-batch. Set " +
+    "`parallel=false` to dispatch just the first ready feature, or pin a specific feature with " +
+    "`feature_id`. The tool does NOT spawn the subagent or write features.json status itself — " +
+    "after the subagent returns, the main AI calls ghs-parse-completion-signal then " +
     "ghs-update-feature-status, then re-calls ghs-code until it returns the " +
     "'=== ghs-code: no ready features ===' banner.",
   args: {
@@ -181,8 +183,9 @@ export const codeTool = tool({
       .boolean()
       .optional()
       .describe(
-        "Parallel mode. When true, the tool returns ALL ready features plus conflict-free " +
-        "parallel batches (a dispatch plan) instead of pinning a single target.",
+        "Parallel batch dispatch. DEFAULT is true (omitted === true): the tool returns ALL ready " +
+        "features grouped into conflict-free batches (a dispatch plan). Set `parallel=false` to " +
+        "dispatch just the first ready feature (single-feature mode) instead.",
       ),
     project_dir: tool.schema
       .string()
@@ -284,10 +287,13 @@ export const codeTool = tool({
     // (5) Branch on args.
     //
     // `feature_id` pin (highest priority) → validate + single-feature dispatch.
-    // `parallel=true` → multi-feature dispatch plan (batches).
-    // default → pick the first ready feature (stable, deterministic order —
-    //   getReadyFeatures preserves features.json order) and dispatch it.
-    const parallelMode = args.parallel === true;
+    // `parallel === false` → explicit single-feature dispatch (auto-pick the
+    //   first ready feature). This is the opt-OUT of the now-default parallel
+    //   mode, kept so a caller can still drive one-feature-at-a-time.
+    // default (parallel omitted / true) → multi-feature dispatch plan (batches).
+    //   Parallel is the DEFAULT: a bare `ghs-code` call returns the batch plan
+    //   and the main AI implements features batch-by-batch.
+    const singleMode = args.parallel === false;
 
     if (args.feature_id) {
       body = dispatchPinnedFeature(
@@ -299,7 +305,11 @@ export const codeTool = tool({
       );
       // Pinned: single-feature checklist (one in_progress item).
       stages = [`code:${args.feature_id}`];
-    } else if (parallelMode) {
+    } else if (singleMode) {
+      body = dispatchSingleFeature(ready[0], projectDir, cycleWarning);
+      const firstId = (ready[0]["id"] as string | undefined) ?? "default";
+      stages = [`code:${firstId}`];
+    } else {
       body = dispatchParallelPlan(ready, projectDir, cycleWarning);
       // Parallel: todoDirective's `stages` is the batch's feature ids
       // (plan §3.1 注入点② — "code 并行场景的 todoDirective 按 batch 展开").
@@ -309,10 +319,6 @@ export const codeTool = tool({
       stages = ready.map(
         (f) => `code:${(f["id"] as string | undefined) ?? "unknown"}`,
       );
-    } else {
-      body = dispatchSingleFeature(ready[0], projectDir, cycleWarning);
-      const firstId = (ready[0]["id"] as string | undefined) ?? "default";
-      stages = [`code:${firstId}`];
     }
 
     // (6) Apply workflow chrome (mechanism-1 injection point ② main path).
@@ -339,7 +345,8 @@ export const codeTool = tool({
  * For `ghs-code`, `getStageSignature` always returns a non-null `code:*`
  * signature (the tool is stage-tracked by args shape, not disk state), so
  * the null branch is only hit when args somehow lack both `feature_id` and
- * `parallel` (extreme edge case) — and even then it returns `code:default`.
+ * `parallel` (extreme edge case) — and even then it returns `code:batch`
+ * (parallel is the default).
  * The defensive null handling is kept for symmetry with the other tools.
  */
 async function composeChrome(args: {
@@ -543,7 +550,7 @@ function dispatchParallelPlan(
     "每个 feature 独立派发 coding subagent（各 Task call 互不依赖）。所有 subagent 返回后，",
   );
   lines.push(
-    "逐个调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 全部更新后再次调 ghs-code（parallel: true）取下一批，直到返回 '=== ghs-code: no ready features ===' banner。",
+    "逐个调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 全部更新后再次调 ghs-code（默认即 parallel 模式，或显式 parallel: true）取下一批，直到返回 '=== ghs-code: no ready features ===' banner。",
   );
   lines.push(
     "并行 git 守则：每个 subagent 显式 `git add <实现文件路径>` 做**恰好一次** commit（禁 `git add -A`/`add .`/`reset`，禁提交 `.ghs/*`），避免兄弟 commit 被 orphan。",
@@ -571,7 +578,7 @@ function dispatchSingleFeature(
     lines.push("");
   }
   lines.push(
-    "已按依赖顺序选取第一个 ready feature（如需并发派发多个，用 `ghs-code` 并传 `parallel: true`）：",
+    "已按依赖顺序选取第一个 ready feature（默认为并行批次模式；此处因显式 `parallel: false` 走单 feature 路径，去掉该参数即恢复默认批次模式）：",
   );
   lines.push("");
   lines.push("Selected feature:");
@@ -581,7 +588,7 @@ function dispatchSingleFeature(
     "Next: 用 Task tool 派发 coding subagent（派发 prompt 见下，已注入 project dir 与 feature_id），",
   );
   lines.push(
-    "subagent 返回后：调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 再次调 ghs-code（无参数）取下一个 ready feature，直到返回 '=== ghs-code: no ready features ===' banner。",
+    "subagent 返回后：调 ghs-parse-completion-signal 解析完成信号 → 调 ghs-update-feature-status 更新 status → 再次调 ghs-code（parallel: false）取下一个 ready feature，直到返回 '=== ghs-code: no ready features ===' banner。",
   );
   lines.push("");
   lines.push("--- feature-impl dispatch prompt ---");

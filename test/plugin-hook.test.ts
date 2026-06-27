@@ -151,7 +151,8 @@ describe("tool.execute.after annotation (ghs-* tools)", () => {
       { args: { feature_id: "f-1" }, stage: "code:f-1" },
       { args: { feature_id: "f-2" }, stage: "code:f-2" },
       { args: { parallel: true }, stage: "code:batch" },
-      { args: {}, stage: "code:default" },
+      { args: {}, stage: "code:batch" },
+      { args: { parallel: false }, stage: "code:default" },
     ];
     for (const { args, stage } of samples) {
       const after = await runHook("ghs-code", args);
@@ -185,12 +186,13 @@ describe("tool.execute.after graceful skip (stage === null)", () => {
     });
   }
 
-  test("ghs-code without feature_id/parallel still annotates (code:default)", async () => {
+  test("ghs-code without feature_id/parallel still annotates (code:batch — parallel default)", async () => {
     // ghs-code ALWAYS derives a non-null stage, so even with empty args it
     // annotates rather than skipping — this distinguishes it from the
-    // single-step tools above.
+    // single-step tools above. Empty args now resolve to code:batch because
+    // parallel batch dispatch is the default.
     const after = await runHook("ghs-code", {});
-    expect(after.title).toBe("[ghs] code:default");
+    expect(after.title).toBe("[ghs] code:batch");
   });
 });
 

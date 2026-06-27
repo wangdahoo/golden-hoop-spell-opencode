@@ -112,8 +112,9 @@ export function recordTodoTick(sessionID: string): void {
  *
  * **code tool** (`ghs-code`) → `"code:${feature_id | "batch" | "default"}"`
  * derived purely from args (no filesystem read): `feature_id` when pinned,
- * `"batch"` when `parallel === true`, else `"default"` for the single-feature
- * dispatch path.
+ * `"default"` when `parallel === false` (explicit single-feature opt-out),
+ * else `"batch"` — parallel batch dispatch is the DEFAULT (a bare `ghs-code`
+ * call with no args returns the batch plan).
  *
  * Returns `null` when:
  *   - the tool is not stage-tracked (init / config / sprint / status /
@@ -158,10 +159,10 @@ export async function getStageSignature(
     if (typeof featureId === "string" && featureId.trim().length > 0) {
       return `code:${featureId}`;
     }
-    if (args["parallel"] === true) {
-      return `code:batch`;
+    if (args["parallel"] === false) {
+      return `code:default`;
     }
-    return `code:default`;
+    return `code:batch`;
   }
 
   // init / config / sprint / append-feature / parse-completion-signal /

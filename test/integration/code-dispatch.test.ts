@@ -200,8 +200,9 @@ describe("integration: ghs-code tool dispatch guidance (s4-feat-005)", () => {
     expect(result).toContain("FEATURE COMPLETE: <feature_id>");
   });
 
-  test("single feature (default path): returns dispatch guidance with real tool names + loop", async () => {
-    // Default dispatch (no feature_id, no parallel) → dispatchSingleFeature.
+  test("default (no args) yields the parallel dispatch plan", async () => {
+    // Default dispatch (no feature_id, no parallel) → dispatchParallelPlan.
+    // Parallel is the default; a bare ghs-code call returns the batch plan.
     await seedFeatures(projectDir, {
       project: "test-project",
       sprints: [
@@ -228,8 +229,55 @@ describe("integration: ghs-code tool dispatch guidance (s4-feat-005)", () => {
       mockToolContext(projectDir),
     );
 
+    // The default is now the parallel batch dispatch plan.
+    expect(result).toContain("parallel dispatch plan");
+    expect(result).toContain("Batch");
     // The selected feature is surfaced.
     expect(result).toContain("s-int-feat-020");
+    // s1-feat-003: dispatch prose references real tool names + the re-call
+    // loop + the terminal banner; no bare tool stems.
+    expect(result).toContain("ghs-parse-completion-signal");
+    expect(result).toContain("ghs-update-feature-status");
+    expect(result).toContain("=== ghs-code: no ready features ===");
+    expectNoBareToolStems(result);
+  });
+
+  test("parallel: false opt-out yields single-feature dispatch guidance", async () => {
+    // Explicit parallel:false → dispatchSingleFeature (auto-pick first ready).
+    await seedFeatures(projectDir, {
+      project: "test-project",
+      sprints: [
+        {
+          id: "s-int",
+          status: "in_progress",
+          features: [
+            {
+              id: "s-int-feat-021",
+              title: "Single-opt-out ready feature",
+              status: "pending",
+              dependencies: [],
+              files_affected: ["src/s.ts"],
+              acceptance_criteria: ["AC1"],
+            },
+          ],
+        },
+      ],
+      metadata: { version: "1.0.0" },
+    });
+
+    const result = await codeTool.execute(
+      { parallel: false, project_dir: projectDir },
+      mockToolContext(projectDir),
+    );
+
+    // Single-feature framing (not the batch plan).
+    expect(result).toContain("=== ghs-code: feature ready ===");
+    expect(result).not.toContain("parallel dispatch plan");
+    // The selected feature is surfaced.
+    expect(result).toContain("s-int-feat-021");
+    // The prompt is rendered per-feature (placeholders substituted).
+    expect(result).toContain("FEATURE COMPLETE");
+    expect(result).not.toContain("<feature_id>");
     // s1-feat-003: dispatch prose references real tool names + the re-call
     // loop + the terminal banner; no bare tool stems.
     expect(result).toContain("ghs-parse-completion-signal");

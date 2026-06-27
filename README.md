@@ -176,7 +176,7 @@ opencode plugin golden-hoop-spell-opencode --global
 | `ghs-plan-review` | 规划 | 三模式核心循环：`snapshot`（解析快照→派发 designer）/ `plan`（解析设计→派发 reviewer）/ `review`（PASS→finalize / FAIL→修订） |
 | `ghs-plan-finalize` | 规划 | 评审通过后将计划落盘到 `.ghs/plans/<日期>-<slug>.md`，标记 `approved` |
 | `ghs-sprint` | 拆分 | 自动归档已完成 sprint，生成下一 sprint id，创建空 sprint 骨架，返回拆解 prompt |
-| `ghs-code` | 编码 | 查找当前 sprint 的就绪 feature（pending + 依赖已完成），返回 feature-impl prompt 供主 AI 派发 coding subagent；支持 `parallel=true` 无冲突并行批次 |
+| `ghs-code` | 编码 | 查找当前 sprint 的就绪 feature（pending + 依赖已完成），**默认并行批次**模式：返回无冲突批次计划按批派发 coding subagent；`parallel=false` 切换为单 feature，或用 `feature_id` 锁定单个 |
 | `ghs-status` | 查询 | 只读报告：每个 sprint 的 feature 计数、进行中 feature、下一个就绪 feature、近期 progress.md 条目 |
 | `ghs-archive` | 归档 | 将状态为 `completed` 的 sprint 迁移到 `.ghs/archived/` 并从 features.json 移除 |
 | `ghs-force-archive` | 归档 | ⚠️ 强制归档所有 sprint（含 in_progress / blocked），需 `ghs-archive` 先签发的 nonce 令牌确认 |

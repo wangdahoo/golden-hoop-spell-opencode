@@ -79,13 +79,14 @@ export const GHS_COMMANDS: Record<string, GhCommand> = {
       "If either is missing, ask the user for the missing value(s) before calling the tool.",
   },
   "ghs-code": {
-    description: "派发 ghs feature 实现（单个或并行批次）",
+    description: "派发 ghs feature 实现（默认并行批次，或单个）",
     template:
       "Call the `ghs-code` tool to dispatch feature implementation.\n\n" +
       "Arguments: $ARGUMENTS\n\n" +
-      "If a feature ID (e.g. `s5-feat-003`) is provided, pass it as `feature_id`. " +
-      "If `--parallel` is present, set `parallel: true`. " +
-      "If no arguments are given, call without `feature_id` to get the next ready feature.",
+      "If a feature ID (e.g. `s5-feat-003`) is provided, pass it as `feature_id` to pin that single feature. " +
+      "Parallel batch dispatch is the DEFAULT (no flag needed): with no args the tool returns all ready " +
+      "features grouped into conflict-free batches. " +
+      "If `--single` is present, set `parallel: false` to dispatch just the first ready feature instead.",
   },
   "ghs-status": {
     description: "显示 ghs 项目状态（sprint/feature 进度）",

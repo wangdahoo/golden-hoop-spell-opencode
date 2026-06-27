@@ -307,9 +307,13 @@ describe("e2e: full ghs plugin workflow (init → … → archive) (s5-feat-005)
     // ========================================================================
     // (9) ghs-code — read features.json, find the ready feature, return
     //     dispatch guidance embedding FEATURE_IMPL_PROMPT.
+    //
+    //     parallel:false keeps the single-feature path so the prompt is
+    //     rendered with the feature_id pre-substituted (the default parallel
+    //     path leaves <feature_id> as a literal shared-template placeholder).
     // ========================================================================
     const codeResult = await codeTool.execute(
-      { project_dir: projectDir },
+      { parallel: false, project_dir: projectDir },
       mockToolContext(projectDir),
     );
     expect(codeResult).toContain(featureId);

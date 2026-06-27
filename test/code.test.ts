@@ -121,9 +121,12 @@ describe("code workflow chrome (s1-feat-005)", () => {
     const sid = "code-chrome-single-1";
     const { ctx, calls } = mockCtxCaptured(projectDir, sid);
 
-    const result = await codeTool.execute({ project_dir: projectDir }, ctx);
+    const result = await codeTool.execute(
+      { parallel: false, project_dir: projectDir },
+      ctx,
+    );
 
-    // stageHeader prepended with code:default (no feature_id, no parallel).
+    // stageHeader prepended with code:default (parallel:false single opt-out).
     expect(result).toContain("--- ghs stage: code:default ---");
     // Original body preserved.
     expect(result).toContain("=== ghs-code: feature ready ===");
@@ -262,7 +265,12 @@ describe("code workflow chrome (s1-feat-005)", () => {
     classifyStaleState(sid, "code:default");
 
     const { ctx, calls } = mockCtxCaptured(projectDir, sid);
-    const result = await codeTool.execute({ project_dir: projectDir }, ctx);
+    // parallel:false keeps this on the code:default single-feature stage so
+    // the prime (code:default) and this call match → "fresh" (no drift).
+    const result = await codeTool.execute(
+      { parallel: false, project_dir: projectDir },
+      ctx,
+    );
 
     expect(result).toContain("--- ghs stage: code:default ---");
     expect(result).not.toContain("STALE TODO:");

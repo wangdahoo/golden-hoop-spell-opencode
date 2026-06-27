@@ -238,8 +238,15 @@ describe("getStageSignature - code (s1-feat-002)", () => {
     expect(sig).toBe("code:batch");
   });
 
-  test("code with no args returns 'code:default'", async () => {
+  test("code with no args returns 'code:batch' (parallel is the default)", async () => {
     const sig = await getStageSignature("ghs-code", projectDir, {});
+    expect(sig).toBe("code:batch");
+  });
+
+  test("code with parallel=false returns 'code:default' (single opt-out)", async () => {
+    const sig = await getStageSignature("ghs-code", projectDir, {
+      parallel: false,
+    });
     expect(sig).toBe("code:default");
   });
 
@@ -251,8 +258,8 @@ describe("getStageSignature - code (s1-feat-002)", () => {
     expect(sig).toBe("code:s1-feat-001");
   });
 
-  test("code with empty-string feature_id falls through to parallel/default", async () => {
-    // An empty/whitespace feature_id is treated as absent.
+  test("code with empty-string feature_id falls through to batch (default)", async () => {
+    // An empty/whitespace feature_id is treated as absent → default parallel.
     const sigParallel = await getStageSignature("ghs-code", projectDir, {
       feature_id: "   ",
       parallel: true,
@@ -262,7 +269,14 @@ describe("getStageSignature - code (s1-feat-002)", () => {
     const sigDefault = await getStageSignature("ghs-code", projectDir, {
       feature_id: "",
     });
-    expect(sigDefault).toBe("code:default");
+    expect(sigDefault).toBe("code:batch");
+
+    // Explicit opt-out still lands on the single-feature stage.
+    const sigSingle = await getStageSignature("ghs-code", projectDir, {
+      feature_id: "",
+      parallel: false,
+    });
+    expect(sigSingle).toBe("code:default");
   });
 });
 
