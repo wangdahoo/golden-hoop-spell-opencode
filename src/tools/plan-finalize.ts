@@ -198,6 +198,32 @@ export function deriveSlug(planContent: string): string {
   );
 }
 
+/**
+ * Derive a human-readable commit-message title from a plan's text content.
+ *
+ * Used to build the `docs(plan): <title>` commit instruction the tool emits so
+ * the approved plan gets checked into version control. Reuses {@link
+ * deriveSlug}'s "first meaningful line" heuristic but keeps the readable form
+ * (slug-sanitising would yield an unhelpful commit subject like
+ * `refactor-auth-module`). Internal whitespace collapses to single spaces and
+ * the characters that break a double-quoted shell string (`"` and `\`) are
+ * dropped so the emitted `git commit -m "..."` is safe to run verbatim.
+ */
+export function derivePlanTitle(planContent: string): string {
+  const lines = planContent.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line === "---") continue;
+    const title = line
+      .replace(/^#+\s*/, "")
+      .replace(/\s+/g, " ")
+      .replace(/["\\]/g, "")
+      .trim();
+    return title || "plan";
+  }
+  return "plan";
+}
+
 // -----------------------------------------------------------------------------
 // Status update
 // -----------------------------------------------------------------------------
@@ -436,7 +462,24 @@ export const planFinalizeTool = tool({
       );
     }
     lines.push("");
-    lines.push("Next: invoke ghs-sprint to break this plan into features.");
+    if (!docsWarning) {
+      // The `.ghs/` artefact is gitignored; the docs mirror is the committable
+      // path. Emit a copy-pasteable git add + git commit so the approved plan
+      // is version-controlled and shareable (regression: this used to be
+      // absent, leaving the finalised plan uncommitted in the working tree).
+      const docsRelPath = `docs/ghs/plans/${planFileName}`;
+      const commitTitle = derivePlanTitle(args.plan_content);
+      lines.push("Commit the approved plan to version control");
+      lines.push("(`.ghs/` is gitignored — only the docs mirror is committable):");
+      lines.push(`  git add ${docsRelPath}`);
+      lines.push(`  git commit -m "docs(plan): ${commitTitle}"`);
+      lines.push("");
+      lines.push(
+        "Next: commit the plan doc above (git add + git commit), then invoke ghs-sprint to break this plan into features.",
+      );
+    } else {
+      lines.push("Next: invoke ghs-sprint to break this plan into features.");
+    }
     // (f) Apply workflow chrome (mechanism-1 injection point ② main path).
     // Post-advance timing: getStageSignature is invoked AFTER
     // markPlanApproved returned. On the success path status is now `approved`

@@ -241,7 +241,7 @@ describe("planFinalizeTool.execute", () => {
 
     // Result string announces success + the next-step instruction.
     expect(result).toContain("=== ghs-plan-finalize complete ===");
-    expect(result).toContain("Next: invoke ghs-sprint to break this plan into features.");
+    expect(result).toContain("invoke ghs-sprint to break this plan into features.");
   });
 
   test("creates .ghs/plans/ when it does not already exist", async () => {
@@ -495,6 +495,41 @@ describe("planFinalizeTool.execute", () => {
     expect(result).toContain("Mirrored to:");
     const after = await readPlanStatus(tempRoot, planId);
     expect(after?.status).toBe("approved");
+  });
+
+  // -------------------------------------------------------------------------
+  // Commit instruction for the committable docs mirror (regression: the
+  // approved plan used to sit uncommitted in the working tree because no
+  // ghs tool or prompt told the AI to `git commit` it).
+  // -------------------------------------------------------------------------
+
+  test("success body instructs committing the docs mirror to git", async () => {
+    const result = await planFinalizeTool.execute(
+      { plan_content: PLAN_CONTENT, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    expect(result).toContain("=== ghs-plan-finalize complete ===");
+    // The commit instruction points at the committable docs mirror (relative
+    // path, forward slashes for cross-OS git compatibility).
+    expect(result).toContain("git add docs/ghs/plans/");
+    expect(result).toContain("git commit");
+    // Message format: docs(plan): <title derived from the plan H1>.
+    expect(result).toContain("docs(plan): Refactor Auth Module");
+  });
+
+  test("commit instruction omitted when the docs mirror failed to write", async () => {
+    // Block the docs tree so the mirror write fails.
+    await writeFile(join(tempRoot, "docs"), "i am a file not a dir");
+
+    const result = await planFinalizeTool.execute(
+      { plan_content: PLAN_CONTENT, project_dir: tempRoot },
+      ctx(tempRoot),
+    );
+
+    expect(result).toContain("Failed to mirror plan to docs/ghs/plans/");
+    // Nothing committable was produced → no commit instruction.
+    expect(result).not.toContain("git commit");
   });
 
   test("docs mirror failure degrades gracefully — .ghs written + warning + approved", async () => {
