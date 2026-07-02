@@ -20,6 +20,10 @@ import {
   updateFeatureStatus,
   VALID_FEATURE_STATUSES,
 } from "../lib/scripts/update-feature-status.ts";
+import {
+  appendProgressSession,
+  type ProgressSession,
+} from "../lib/scripts/append-progress-session.ts";
 import { resolveProjectDir } from "../lib/project.ts";
 
 export const updateFeatureStatusTool = tool({
@@ -29,7 +33,9 @@ export const updateFeatureStatusTool = tool({
     "status 'completed' or 'blocked', to record the outcome. Sets the feature " +
     "status; the caller is responsible for transition legality — the underlying " +
     "writer validates the status enum value and feature existence, NOT the " +
-    "direction of state transitions.",
+    "direction of state transitions. When the new status is 'completed' or " +
+    "'blocked', also appends a session entry to .ghs/progress.md " +
+    "(best-effort: a missing/malformed progress.md never aborts the features.json write).",
   args: {
     feature_id: tool.schema
       .string()
@@ -110,6 +116,27 @@ export const updateFeatureStatusTool = tool({
       "",
       `Written to ${featuresPath}`,
     ];
+
+    // Auto-append a progress.md session when the feature reaches a terminal
+    // state. The `appendProgressSession` writer (s2-feat-001) existed but was
+    // never wired into a tool, so progress.md stayed empty in practice: the
+    // coding subagent is forbidden from writing .ghs/ and no orchestrator tool
+    // wrote it either. Best-effort — a missing/malformed progress.md never
+    // aborts the features.json write that already succeeded.
+    if (args.status === "completed" || args.status === "blocked") {
+      const note = await tryAppendProgressSession(
+        projectDir,
+        args.feature_id,
+        args.status,
+        args.blocked_reason,
+        after?.id ?? before?.id ?? "",
+      );
+      if (note !== "") {
+        lines.push("");
+        lines.push(note);
+      }
+    }
+
     if (promoted) {
       lines.push("");
       lines.push(
@@ -119,6 +146,86 @@ export const updateFeatureStatusTool = tool({
     return lines.join("\n");
   },
 });
+
+/**
+ * Append a progress.md session entry recording that `featureId` just reached
+ * `status`. Best-effort: returns a short Chinese status line on success, a
+ * warning line on a recoverable failure, or `""` (no-op) when progress.md is
+ * absent. Never throws — progress.md problems must not abort the features.json
+ * update that already succeeded.
+ *
+ * No-op (returns `""`) when:
+ *   - progress.md does not exist (older projects / minimal test fixtures).
+ *
+ * Warning line (does not throw) when:
+ *   - progress.md lacks the `## Sessions` anchor (`appendProgressSession`
+ *     would throw) — surfaced as a `⚠️` line so the user/AI can fix the file.
+ */
+async function tryAppendProgressSession(
+  projectDir: string,
+  featureId: string,
+  status: "completed" | "blocked",
+  blockedReason: string | undefined,
+  sprintId: string,
+): Promise<string> {
+  const progressPath = join(projectDir, ".ghs", "progress.md");
+  const file = Bun.file(progressPath);
+  if (!(await file.exists())) return "";
+  const prev = await file.text();
+
+  const sessionNumber = countExistingSessions(prev) + 1;
+  const today = formatDate(new Date());
+
+  const workCompleted = [`${featureId} → ${status}`];
+  const issues: string[] = [];
+  const nextSteps: string[] = [];
+  if (status === "blocked" && blockedReason && blockedReason !== "") {
+    issues.push(blockedReason);
+    nextSteps.push("人工解除阻塞原因后，重置为 pending 再 ghs-code 重新实现");
+  } else if (status === "completed") {
+    nextSteps.push("继续 ghs-code 实现下一个就绪 feature");
+  }
+
+  const session: ProgressSession = {
+    title: `Session ${sessionNumber} - ${today}`,
+    agent: "ghs-orchestrator",
+    sprint: sprintId,
+    feature: featureId,
+    work_completed: workCompleted,
+    tests_performed: [],
+    issues,
+    decisions: [],
+    next_steps: nextSteps,
+  };
+
+  try {
+    const next = appendProgressSession(prev, session);
+    await Bun.write(progressPath, next);
+    return `progress.md 已追加会话记录（${session.title}）。`;
+  } catch (err) {
+    return `⚠️ progress.md 会话记录未写入：${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/**
+ * Count existing session entries in progress.md by counting `## Session <digit>`
+ * H2 headings. The shipped template's fenced `## Session N - YYYY-MM-DD` does
+ * NOT match (the `N` placeholder is a letter, not a digit), so a fresh
+ * template-only file yields 0. Used to derive the next session number for the
+ * title.
+ */
+function countExistingSessions(progressMd: string): number {
+  const matches = progressMd.match(/^##\s+Session\s+\d+/gm);
+  return matches ? matches.length : 0;
+}
+
+/** Format a Date as `YYYY-MM-DD` in the local timezone. */
+function formatDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 /**
  * Locate the sprint that owns `featureId` and return its id + status.

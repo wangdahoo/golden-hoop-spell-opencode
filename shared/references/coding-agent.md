@@ -15,7 +15,7 @@
 **Always perform in order:**
 
 1. **Confirm Location**
-   The project directory is established by the orchestrator when dispatching this subagent — use it for all reads/writes of `.ghs/features.json` and `.ghs/progress.md`.
+   The project directory is established by the orchestrator when dispatching this subagent — use it for all reads of `.ghs/features.json` and `.ghs/progress.md`. The subagent MUST NOT write any `.ghs/` file (see Critical Rules); status + progress.md writes are the orchestrator's job via `ghs-update-feature-status`.
 
 2. **Review Recent Work**
    ```bash
@@ -46,8 +46,7 @@
    git add <list each modified implementation file explicitly>
    git commit -m "feat(<scope>): <description>"
    ```
-3. Update `.ghs/features.json` if feature complete
-4. Update `.ghs/progress.md` with session summary
+3. Do **not** modify `.ghs/features.json` or `.ghs/progress.md` — the orchestrator records the feature outcome (and appends the progress.md session) via `ghs-update-feature-status` after parsing your completion signal. Your only `.ghs/`-related output is the completion-signal line.
 
 ## Implementation Process
 
@@ -288,9 +287,9 @@ When retry is exhausted (`retry_count >= MAX_RETRY`) and the parser still cannot
 | Option | Dispatcher behavior | File side-effects | When available |
 |--------|---------------------|-------------------|----------------|
 | **Retry once more** | Increment `retry_count`, re-dispatch with Format Recovery appendix | New `<feature_id>.raw.attempt<N+1>` | Always available |
-| **Manually mark as completed** | Update `.ghs/features.json` with `status: "completed"`. Annotate `.ghs/progress.md` noting "manually marked after format deviation retry" | `.ghs/features.json` written; `.ghs/progress.md` annotated | Always available — but only choose this after manually verifying (commit log + file diff) |
-| **Manually mark as blocked** | Update `.ghs/features.json` with `status: "blocked"` + user-supplied `blocked_reason`. Annotate `.ghs/progress.md` | `.ghs/features.json` written; `.ghs/progress.md` annotated | Always available |
-| **Abort this feature, continue with others** | Leave `.ghs/features.json` for this feature at `status: "pending"`. Annotate `.ghs/progress.md`. Continue with other features in the batch | `.ghs/features.json` unchanged for this feature; `.ghs/progress.md` annotated | Always available (parallel mode only) |
+| **Manually mark as completed** | Call `ghs-update-feature-status(status: "completed")`. progress.md session is auto-appended (you may hand-edit it afterwards to note "manually marked after format deviation retry") | `.ghs/features.json` written; `.ghs/progress.md` session auto-appended | Always available — but only choose this after manually verifying (commit log + file diff) |
+| **Manually mark as blocked** | Call `ghs-update-feature-status(status: "blocked", blocked_reason: <user-supplied>)`. progress.md session auto-appended carrying the reason | `.ghs/features.json` written; `.ghs/progress.md` session auto-appended | Always available |
+| **Abort this feature, continue with others** | Leave this feature at `status: "pending"` (do NOT call ghs-update-feature-status for it, so no progress.md entry is written). Continue with other features in the batch | `.ghs/features.json` unchanged for this feature; no progress.md entry for this feature | Always available (parallel mode only) |
 
 The AskUserQuestion prompt must show the parser's `status`, `strategy`, and `warnings` from the most recent attempt, list the four options, and include the path to the most recent `.raw.attempt<N>` file so the user can inspect the raw subagent output before deciding.
 
@@ -298,37 +297,13 @@ The AskUserQuestion prompt must show the parser's `status`, `strategy`, and `war
 
 Subagents already committed their implementation files individually. No further git commits needed — the orchestrator only updates local tracking files.
 
-1. **Update .ghs/features.json** — Completed features get `status: "completed"`, blocked get `status: "blocked"` with `blocked_reason`
+1. **Update .ghs/features.json** — Completed features get `status: "completed"`, blocked get `status: "blocked"` with `blocked_reason`. Done by calling `ghs-update-feature-status` once per feature (one tool call per outcome — the orchestrator may fan these out per batch).
 
-2. **Write .ghs/progress.md entry** — Add parallel orchestration summary at the top of sessions section:
-
-```markdown
-## Parallel Orchestration - YYYY-MM-DD
-**Agent**: Coding Agent (Parallel Mode)
-**Sprint**: [Sprint ID]
-**Max Parallelism**: [N]
-
-### Execution Summary
-| Feature | Status | Result |
-|---------|--------|--------|
-| s1-feat-002 | completed | success |
-| s1-feat-003 | completed | success |
-| s1-feat-004 | blocked | lint errors in src/api/client.ts |
-
-### Statistics
-- Total features: 8
-- Completed: 6
-- Blocked: 2
-- Success rate: 75%
-
-### Next Steps
-- Review and fix blocked features manually
-- Run /ghs:code to address remaining issues
-```
+2. **progress.md is written automatically** — Each `ghs-update-feature-status` call appends one session entry to `.ghs/progress.md` when the feature reaches `completed` or `blocked` (title `Session N - YYYY-MM-DD`, agent `ghs-orchestrator`, the feature id + status under Work Completed, and the `blocked_reason` under Issues when blocked). The orchestrator does **not** hand-craft a separate parallel summary block — the per-feature entries already give `ghs-status` and `.ghs/progress.md` readers a complete, newest-first trail. If a richer narrative is desired, the orchestrator may append an additional manual session, but it is not required for progress.md to stay current.
 
 ### Parallel Mode Error Handling
 
-- **Subagent Failure**: Record failure, continue other subagents, document in .ghs/progress.md
+- **Subagent Failure**: Record failure, continue other subagents; marking the failed feature `blocked` via `ghs-update-feature-status` auto-documents it in `.ghs/progress.md`
 - **Merge Conflicts**: Detect via build/lint failures, isolate conflicting features, revert if needed
 - **Catastrophic Failure**: Stop orchestration, run full test suite, rollback if needed, recommend single-feature mode
 
@@ -456,8 +431,7 @@ See [examples.md](examples.md) for complete examples.
 ☐ Build succeeds
 ☐ Manual testing completed
 ☐ Code committed with descriptive message
-☐ .ghs/progress.md updated
-☐ .ghs/features.json status updated
+☐ Completion signal emitted (FEATURE COMPLETE/BLOCKED) — orchestrator writes features.json + progress.md via ghs-update-feature-status
 ☐ No TODO comments left
 ☐ No debug code remaining
 ```
@@ -467,9 +441,8 @@ See [examples.md](examples.md) for complete examples.
 ```
 ☐ Feature complete (or clearly documented why not)
 ☐ No lint or build errors
-☐ Code committed (before updating .ghs/ files)
-☐ .ghs/features.json updated (if feature complete)
-☐ .ghs/progress.md updated
+☐ Code committed (the only write the subagent performs)
+☐ Completion signal emitted — orchestrator records features.json + progress.md via ghs-update-feature-status
 ☐ Application in working state
 ```
 
