@@ -25,6 +25,7 @@ import {
   type ProgressSession,
 } from "../lib/scripts/append-progress-session.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import { writeFeaturesSerialized } from "../lib/leaf-writer.ts";
 
 export const updateFeatureStatusTool = tool({
   description:
@@ -82,68 +83,74 @@ export const updateFeatureStatusTool = tool({
       ].join("\n");
     }
 
-    const featuresData = JSON.parse(await featuresFile.text());
+    // (O3, M1) Every disk write this tool performs — features.json AND
+    // progress.md — lives inside the `performWrite` closure so the leaf-writer
+    // validate/lock gate in writeFeaturesSerialized covers the FULL write
+    // surface. A taken-over session's next call hits validateLockHeld
+    // → held_by_other and is rejected BEFORE either file is touched.
+    return writeFeaturesSerialized(ctx, projectDir, async () => {
+      const featuresData = JSON.parse(await featuresFile.text());
 
-    // The pure function's Zod schema re-validates the spec (format, enum,
-    // blocked_reason refinement) — same-source double validation. On invalid
-    // input it throws ZodError; let it propagate (same pattern as
-    // sprintTool → appendSprint).
-    const updated = updateFeatureStatus(featuresData, {
-      feature_id: args.feature_id,
-      status: args.status,
-      ...(args.blocked_reason !== undefined
-        ? { blocked_reason: args.blocked_reason }
-        : {}),
-    });
+      // The pure function's Zod schema re-validates the spec (format, enum,
+      // blocked_reason refinement) — same-source double validation. On invalid
+      // input it throws ZodError; let it propagate (same pattern as
+      // sprintTool → appendSprint). The leaf lock (if standalone) is released
+      // by the surrounding writeFeaturesSerialized finally block on the throw.
+      const updated = updateFeatureStatus(featuresData, {
+        feature_id: args.feature_id,
+        status: args.status,
+        ...(args.blocked_reason !== undefined
+          ? { blocked_reason: args.blocked_reason }
+          : {}),
+      });
 
-    await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
+      await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
 
-    // Detect sprint-completion promotion: the pure writer flips the owning
-    // sprint's status to "completed" when its last feature completes. Compare
-    // that sprint's status before/after so the AI is told the sprint is now
-    // ready to archive (it otherwise has no signal — ghs-code just reports
-    // "no ready features" without persisting anything).
-    const before = findOwningSprint(featuresData, args.feature_id);
-    const after = findOwningSprint(updated, args.feature_id);
-    const promoted =
-      before !== null &&
-      after !== null &&
-      before.status !== "completed" &&
-      after.status === "completed";
+      // Detect sprint-completion promotion: the pure writer flips the owning
+      // sprint's status to "completed" when its last feature completes. Compare
+      // that sprint's status before/after so the AI is told the sprint is now
+      // ready to archive (it otherwise has no signal — ghs-code just reports
+      // "no ready features" without persisting anything).
+      const before = findOwningSprint(featuresData, args.feature_id);
+      const after = findOwningSprint(updated, args.feature_id);
+      const promoted =
+        before !== null &&
+        after !== null &&
+        before.status !== "completed" &&
+        after.status === "completed";
 
-    const lines = [
-      `✅ Feature ${args.feature_id} status updated → ${args.status}.`,
-      "",
-      `Written to ${featuresPath}`,
-    ];
+      const lines = [
+        `✅ Feature ${args.feature_id} status updated → ${args.status}.`,
+        "",
+        `Written to ${featuresPath}`,
+      ];
 
-    // Auto-append a progress.md session when the feature reaches a terminal
-    // state. The `appendProgressSession` writer (s2-feat-001) existed but was
-    // never wired into a tool, so progress.md stayed empty in practice: the
-    // coding subagent is forbidden from writing .ghs/ and no orchestrator tool
-    // wrote it either. Best-effort — a missing/malformed progress.md never
-    // aborts the features.json write that already succeeded.
-    if (args.status === "completed" || args.status === "blocked") {
-      const note = await tryAppendProgressSession(
-        projectDir,
-        args.feature_id,
-        args.status,
-        args.blocked_reason,
-        after?.id ?? before?.id ?? "",
-      );
-      if (note !== "") {
-        lines.push("");
-        lines.push(note);
+      // Auto-append a progress.md session when the feature reaches a terminal
+      // state. Best-effort — a missing/malformed progress.md never aborts the
+      // features.json write that already succeeded. This write is INSIDE
+      // performWrite (O3) so it shares the same lock discipline.
+      if (args.status === "completed" || args.status === "blocked") {
+        const note = await tryAppendProgressSession(
+          projectDir,
+          args.feature_id,
+          args.status,
+          args.blocked_reason,
+          after?.id ?? before?.id ?? "",
+        );
+        if (note !== "") {
+          lines.push("");
+          lines.push(note);
+        }
       }
-    }
 
-    if (promoted) {
-      lines.push("");
-      lines.push(
-        `Sprint ${after!.id} 的所有 feature 已完成，sprint 状态已置为 completed —— 可用 \`ghs-archive\` 归档该 sprint。`,
-      );
-    }
-    return lines.join("\n");
+      if (promoted) {
+        lines.push("");
+        lines.push(
+          `Sprint ${after!.id} 的所有 feature 已完成，sprint 状态已置为 completed —— 可用 \`ghs-archive\` 归档该 sprint。`,
+        );
+      }
+      return lines.join("\n");
+    }, "ghs-update-feature-status");
   },
 });
 

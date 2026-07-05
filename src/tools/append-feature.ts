@@ -22,6 +22,7 @@ import {
   VALID_COMPLEXITIES,
 } from "../lib/scripts/append-feature.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import { writeFeaturesSerialized } from "../lib/leaf-writer.ts";
 
 export const appendFeatureTool = tool({
   description:
@@ -108,35 +109,39 @@ export const appendFeatureTool = tool({
       ].join("\n");
     }
 
-    const featuresData = JSON.parse(await featuresFile.text());
+    return writeFeaturesSerialized(ctx, projectDir, async () => {
+      const featuresData = JSON.parse(await featuresFile.text());
 
-    // The pure function's Zod schema re-validates the spec (format, enum,
-    // uniqueness) — same-source double validation. On invalid input it throws
-    // ZodError; let it propagate (same pattern as sprintTool → appendSprint).
-    const updated = appendFeature(featuresData, {
-      sprint_id: args.sprint_id,
-      feature: {
-        id: args.feature_id,
-        category: args.category,
-        priority: args.priority,
-        title: args.title,
-        description: args.description,
-        acceptance_criteria: args.acceptance_criteria,
-        ...(args.technical_notes !== undefined
-          ? { technical_notes: args.technical_notes }
-          : {}),
-        dependencies: args.dependencies ?? [],
-        estimated_complexity: args.estimated_complexity,
-        files_affected: args.files_affected ?? [],
-      },
-    });
+      // The pure function's Zod schema re-validates the spec (format, enum,
+      // uniqueness) — same-source double validation. On invalid input it
+      // throws ZodError; let it propagate (same pattern as sprintTool →
+      // appendSprint). The leaf lock (if standalone) is released by the
+      // surrounding writeFeaturesSerialized finally block on the throw.
+      const updated = appendFeature(featuresData, {
+        sprint_id: args.sprint_id,
+        feature: {
+          id: args.feature_id,
+          category: args.category,
+          priority: args.priority,
+          title: args.title,
+          description: args.description,
+          acceptance_criteria: args.acceptance_criteria,
+          ...(args.technical_notes !== undefined
+            ? { technical_notes: args.technical_notes }
+            : {}),
+          dependencies: args.dependencies ?? [],
+          estimated_complexity: args.estimated_complexity,
+          files_affected: args.files_affected ?? [],
+        },
+      });
 
-    await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
+      await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
 
-    return [
-      `✅ Feature ${args.feature_id} appended to sprint ${args.sprint_id} (status: pending).`,
-      "",
-      `Written to ${featuresPath}`,
-    ].join("\n");
+      return [
+        `✅ Feature ${args.feature_id} appended to sprint ${args.sprint_id} (status: pending).`,
+        "",
+        `Written to ${featuresPath}`,
+      ].join("\n");
+    }, "ghs-append-feature");
   },
 });

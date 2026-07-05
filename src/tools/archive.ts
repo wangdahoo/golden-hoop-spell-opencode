@@ -32,6 +32,12 @@ import {
 } from "../lib/scripts/archive-sprint.ts";
 import { generateNonce } from "../lib/nonce.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import {
+  acquireLock,
+  releaseLock,
+  buildLabel,
+} from "../lib/runtime-lock.ts";
+import { renderConflictMessage } from "../lib/scripts/runtime-lock.ts";
 
 /** Path of the per-project nonce file used by `ghs-force-archive`. */
 function nonceFilePath(projectDir: string): string {
@@ -127,9 +133,18 @@ export const archiveTool = tool({
       .describe(
         "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
       ),
+    takeover: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set true to forcibly take over the ghs runtime lock (.ghs/active.lock) " +
+        "when another session holds it. Use only after seeing a conflict message " +
+        "and consciously deciding to 接管 (the other session's subsequent writes " +
+        "will be rejected by the leaf-writer pre-write validate).",
+      ),
   },
   async execute(
-    args: { dry_run?: boolean; list?: boolean; project_dir?: string },
+    args: { dry_run?: boolean; list?: boolean; project_dir?: string; takeover?: boolean },
     ctx: ToolContext,
   ): Promise<string> {
     const projectDir = args.project_dir
@@ -161,83 +176,109 @@ export const archiveTool = tool({
     }
 
     // ----- dry-run + archive modes both go through archiveSprints -----
-    // We call archiveSprints twice for the archive path: once with
-    // dryRun=true to get the preview info, then once with dryRun=false to
-    // actually move the files. This keeps the report identical to Python's
-    // (which prints the per-sprint "Archiving sprint:" line *before* the
-    // move) without reaching into archiveSprintFiles' internals.
-    //
-    // For dry-run, the single dryRun=true call is enough.
-    const preview = await archiveSprints({
+    // (M2/M3) acquireLock as a stage owner AFTER the list-mode dispatch and
+    // BEFORE any write. list mode is a pure read and skips the lock. archive
+    // is the sprint-closing action, so it reuses the `sprint` stage (same-
+    // session idempotent with a pre-existing sprint/code lock). Every return
+    // path below goes through the finally → releaseLock, so the lock never
+    // leaks; an exception in the post-acquire section also releases.
+    const lock = await acquireLock({
       projectDir,
-      dryRun: true,
-      force: false,
+      sessionId: ctx.sessionID,
+      stage: "sprint",
+      sprintId: null,
+      holderLabel: buildLabel(ctx),
+      takeover: args.takeover ?? false,
     });
+    if (!lock.acquired) {
+      return renderConflictMessage(
+        lock.holder,
+        "ghs-archive 归档 sprint",
+        "ghs-archive",
+      );
+    }
 
-    // Pre-load the features data — we need it to compute remainingCount and
-    // to decide whether to issue a force-archive nonce below.
-    const featuresBefore = await loadFeaturesData(projectDir);
+    try {
+      // We call archiveSprints twice for the archive path: once with
+      // dryRun=true to get the preview info, then once with dryRun=false to
+      // actually move the files. This keeps the report identical to Python's
+      // (which prints the per-sprint "Archiving sprint:" line *before* the
+      // move) without reaching into archiveSprintFiles' internals.
+      //
+      // For dry-run, the single dryRun=true call is enough.
+      const preview = await archiveSprints({
+        projectDir,
+        dryRun: true,
+        force: false,
+      });
 
-    if (preview.length === 0) {
-      // Nothing completed to archive. But if there are *incomplete* sprints,
-      // we still want to issue a nonce so the user can `ghs-force-archive`
-      // them. Short-circuit the normal report and append a nonce hint.
+      // Pre-load the features data — we need it to compute remainingCount and
+      // to decide whether to issue a force-archive nonce below.
+      const featuresBefore = await loadFeaturesData(projectDir);
+
+      if (preview.length === 0) {
+        // Nothing completed to archive. But if there are *incomplete* sprints,
+        // we still want to issue a nonce so the user can `ghs-force-archive`
+        // them. Short-circuit the normal report and append a nonce hint.
+        const report = formatArchiveReport({
+          projectDir,
+          mode: dryRunMode ? "dry-run" : "archive",
+          force: false,
+          sprintsConsidered: [],
+          archived: [],
+          remainingCount: featuresBefore ? getAllSprints(featuresBefore).length : 0,
+          resetProgress: false,
+        });
+        return maybeAppendNonce(projectDir, report, featuresBefore);
+      }
+
+      let archived: ArchivedSprintInfo[];
+      let featuresAfter: Record<string, unknown> | null = null;
+      if (dryRunMode) {
+        archived = preview;
+      } else {
+        // archiveMode: actually archive.
+        archived = await archiveSprints({
+          projectDir,
+          dryRun: false,
+          force: false,
+        });
+        featuresAfter = await loadFeaturesData(projectDir);
+      }
+
+      // Compute remainingCount + resetProgress for the report.
+      const featuresForReport = featuresAfter ?? (await loadFeaturesData(projectDir));
+      const remainingSprints: Record<string, unknown>[] = featuresForReport
+        ? getAllSprints(featuresForReport)
+        : [];
+      const remainingCount = remainingSprints.length;
+      const resetProgress = archived.length > 0 && remainingCount === 0;
+
+      // sprintsConsidered for the report: the preview (completed sprints).
+      // `formatArchiveReport` accepts `sprintsConsidered: Sprint[]` where
+      // `Sprint` is `Record<string, unknown>` internally — so the mapped
+      // object literal matches without a cast.
+      const sprintsConsidered = preview.map((info) => ({
+        id: info.sprint_id,
+        name: info.sprint_name,
+        status: info.sprint_status,
+      }));
+
       const report = formatArchiveReport({
         projectDir,
-        mode: dryRunMode ? "dry-run" : "archive",
+        mode: archiveMode ? "archive" : "dry-run",
         force: false,
-        sprintsConsidered: [],
-        archived: [],
-        remainingCount: featuresBefore ? getAllSprints(featuresBefore).length : 0,
-        resetProgress: false,
+        sprintsConsidered,
+        archived,
+        remainingCount,
+        resetProgress,
       });
-      return maybeAppendNonce(projectDir, report, featuresBefore);
+
+      // ----- nonce gate hook -----
+      return maybeAppendNonce(projectDir, report, featuresForReport);
+    } finally {
+      await releaseLock({ projectDir, sessionId: ctx.sessionID });
     }
-
-    let archived: ArchivedSprintInfo[];
-    let featuresAfter: Record<string, unknown> | null = null;
-    if (dryRunMode) {
-      archived = preview;
-    } else {
-      // archiveMode: actually archive.
-      archived = await archiveSprints({
-        projectDir,
-        dryRun: false,
-        force: false,
-      });
-      featuresAfter = await loadFeaturesData(projectDir);
-    }
-
-    // Compute remainingCount + resetProgress for the report.
-    const featuresForReport = featuresAfter ?? (await loadFeaturesData(projectDir));
-    const remainingSprints: Record<string, unknown>[] = featuresForReport
-      ? getAllSprints(featuresForReport)
-      : [];
-    const remainingCount = remainingSprints.length;
-    const resetProgress = archived.length > 0 && remainingCount === 0;
-
-    // sprintsConsidered for the report: the preview (completed sprints).
-    // `formatArchiveReport` accepts `sprintsConsidered: Sprint[]` where
-    // `Sprint` is `Record<string, unknown>` internally — so the mapped
-    // object literal matches without a cast.
-    const sprintsConsidered = preview.map((info) => ({
-      id: info.sprint_id,
-      name: info.sprint_name,
-      status: info.sprint_status,
-    }));
-
-    const report = formatArchiveReport({
-      projectDir,
-      mode: archiveMode ? "archive" : "dry-run",
-      force: false,
-      sprintsConsidered,
-      archived,
-      remainingCount,
-      resetProgress,
-    });
-
-    // ----- nonce gate hook -----
-    return maybeAppendNonce(projectDir, report, featuresForReport);
   },
 });
 

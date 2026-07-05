@@ -36,6 +36,12 @@ import {
 import { verifyTranscribeNonce } from "../lib/nonce.ts";
 import { resolveProjectDir } from "../lib/project.ts";
 import { readNonce, nonceFilePath } from "./archive.ts";
+import {
+  acquireLock,
+  releaseLock,
+  buildLabel,
+} from "../lib/runtime-lock.ts";
+import { renderConflictMessage } from "../lib/scripts/runtime-lock.ts";
 
 /** Load features.json. Returns null if missing. */
 async function loadFeaturesData(
@@ -73,9 +79,18 @@ export const forceArchiveTool = tool({
         "The nonce token issued by a prior `ghs-archive` call (when incomplete sprints existed). " +
           "Must match the issued nonce (case-insensitive, whitespace-trimmed) for the archive to proceed.",
       ),
+    takeover: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set true to forcibly take over the ghs runtime lock (.ghs/active.lock) " +
+        "when another session holds it. Use only after seeing a conflict message " +
+        "and consciously deciding to 接管 (the other session's subsequent writes " +
+        "will be rejected by the leaf-writer pre-write validate).",
+      ),
   },
   async execute(
-    args: { project_dir?: string; transcription: string },
+    args: { project_dir?: string; transcription: string; takeover?: boolean },
     ctx: ToolContext,
   ): Promise<string> {
     const projectDir = args.project_dir
@@ -134,62 +149,86 @@ export const forceArchiveTool = tool({
     // Gate passed — consume the nonce so it can't be replayed.
     await readNonce(projectDir, /* consume: */ true);
 
-    // ----- Force archive -----
-    // We collect the preview first (force + dry-run) so the report can show
-    // sprintsConsidered, then run the real archive.
-    const preview = await archiveSprints({
+    // (M2/M3) acquireLock as a stage owner AFTER the pre-flight checks
+    // (features.json present, sprints present, nonce gate passed) and BEFORE
+    // the destructive force-archive writes. Reuses the `sprint` stage
+    // (same-session idempotent). The finally releases on every path.
+    const lock = await acquireLock({
       projectDir,
-      dryRun: true,
-      force: true,
+      sessionId: ctx.sessionID,
+      stage: "sprint",
+      sprintId: null,
+      holderLabel: buildLabel(ctx),
+      takeover: args.takeover ?? false,
     });
+    if (!lock.acquired) {
+      return renderConflictMessage(
+        lock.holder,
+        "ghs-force-archive 强制归档",
+        "ghs-force-archive",
+      );
+    }
 
-    const archived: ArchivedSprintInfo[] = await archiveSprints({
-      projectDir,
-      dryRun: false,
-      force: true,
-    });
+    try {
+      // ----- Force archive -----
+      // We collect the preview first (force + dry-run) so the report can show
+      // sprintsConsidered, then run the real archive.
+      const preview = await archiveSprints({
+        projectDir,
+        dryRun: true,
+        force: true,
+      });
 
-    // After force-archive there are no sprints left → resetProgress is true
-    // when archiveSprints actually moved something.
-    const featuresAfter = await loadFeaturesData(projectDir);
-    const remainingCount = featuresAfter
-      ? getAllSprints(featuresAfter).length
-      : 0;
-    const resetProgress = archived.length > 0 && remainingCount === 0;
+      const archived: ArchivedSprintInfo[] = await archiveSprints({
+        projectDir,
+        dryRun: false,
+        force: true,
+      });
 
-    // sprintsConsidered is `Record<string, unknown>[]` which matches the
-    // `Sprint[]` param of formatArchiveReport (Sprint === JsonObject
-    // internally).
-    const sprintsConsidered = preview.map((info) => ({
-      id: info.sprint_id,
-      name: info.sprint_name,
-      status: info.sprint_status,
-    }));
+      // After force-archive there are no sprints left → resetProgress is true
+      // when archiveSprints actually moved something.
+      const featuresAfter = await loadFeaturesData(projectDir);
+      const remainingCount = featuresAfter
+        ? getAllSprints(featuresAfter).length
+        : 0;
+      const resetProgress = archived.length > 0 && remainingCount === 0;
 
-    if (archived.length === 0) {
-      // Shouldn't normally happen (we checked allSprints.length > 0 above)
-      // but guard anyway — return the canonical "no sprints" report.
-      return formatArchiveReport({
+      // sprintsConsidered is `Record<string, unknown>[]` which matches the
+      // `Sprint[]` param of formatArchiveReport (Sprint === JsonObject
+      // internally).
+      const sprintsConsidered = preview.map((info) => ({
+        id: info.sprint_id,
+        name: info.sprint_name,
+        status: info.sprint_status,
+      }));
+
+      if (archived.length === 0) {
+        // Shouldn't normally happen (we checked allSprints.length > 0 above)
+        // but guard anyway — return the canonical "no sprints" report.
+        return formatArchiveReport({
+          projectDir,
+          mode: "archive",
+          force: true,
+          sprintsConsidered,
+          archived: [],
+          remainingCount,
+          resetProgress,
+        });
+      }
+
+      const report = formatArchiveReport({
         projectDir,
         mode: "archive",
         force: true,
         sprintsConsidered,
-        archived: [],
+        archived,
         remainingCount,
         resetProgress,
       });
+
+      return report;
+    } finally {
+      await releaseLock({ projectDir, sessionId: ctx.sessionID });
     }
-
-    const report = formatArchiveReport({
-      projectDir,
-      mode: "archive",
-      force: true,
-      sprintsConsidered,
-      archived,
-      remainingCount,
-      resetProgress,
-    });
-
-    return report;
   },
 });

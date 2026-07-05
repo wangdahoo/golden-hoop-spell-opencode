@@ -20,7 +20,9 @@ import { join } from "node:path";
 
 import { sprintTool } from "../../src/tools/sprint";
 import { codeTool } from "../../src/tools/code";
-import { readLock } from "../../src/lib/runtime-lock";
+import { appendFeatureTool } from "../../src/tools/append-feature";
+import { updateFeatureStatusTool } from "../../src/tools/update-feature-status";
+import { readLock, acquireLock } from "../../src/lib/runtime-lock";
 import { makeTempDir, mockToolContext } from "./_helpers";
 
 // ---------------------------------------------------------------------------
@@ -62,6 +64,35 @@ async function seedRaw(projectDir: string, contents: string): Promise<void> {
   await writeFile(join(projectDir, ".ghs", "features.json"), contents);
 }
 
+/**
+ * Minimal progress.md carrying only the `## Sessions` anchor that
+ * `appendProgressSession` requires (mirrors test/tools/update-feature-status).
+ */
+const MINIMAL_PROGRESS_MD = `# Project Progress Log
+
+## Sessions
+
+<!-- New sessions should be added above this line -->
+`;
+
+/** Seed a template-only progress.md so update-feature-status can append. */
+async function seedProgress(projectDir: string): Promise<void> {
+  await writeFile(
+    join(projectDir, ".ghs", "progress.md"),
+    MINIMAL_PROGRESS_MD,
+  );
+}
+
+/** Read the raw progress.md text under `projectDir`. */
+async function readProgressMd(projectDir: string): Promise<string> {
+  return Bun.file(join(projectDir, ".ghs", "progress.md")).text();
+}
+
+/** Read the raw features.json text under `projectDir`. */
+async function readFeaturesJson(projectDir: string): Promise<string> {
+  return Bun.file(join(projectDir, ".ghs", "features.json")).text();
+}
+
 /** Read features.json and return the sprint count (defensive on shape). */
 async function sprintCount(projectDir: string): Promise<number> {
   const txt = await Bun.file(join(projectDir, ".ghs", "features.json")).text();
@@ -89,12 +120,13 @@ const BASE_FEATURES: FixtureData = {
 // distinguishable.
 const SESSION_A = "session-A-pipeline";
 const SESSION_B = "session-B-pipeline";
+const SESSION_C = "session-C-pipeline";
 
 // ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
 
-describe("integration: multi-pipeline runtime lock (s1-feat-005)", () => {
+describe("integration: multi-pipeline runtime lock (s1-feat-005 / s1-feat-006)", () => {
   let projectDir: string;
 
   beforeEach(async () => {
@@ -244,6 +276,135 @@ describe("integration: multi-pipeline runtime lock (s1-feat-005)", () => {
       mockToolContext(projectDir, SESSION_A),
     );
     expect(res).toContain("Failed to parse");
+    expect(await readLock(projectDir)).toBeNull();
+  });
+
+  test("scenario 4 (leaf-writer pre-write validate, M1 mandatory): held_by_other rejects write (features.json AND progress.md); kicked session still rejected after takeover", async () => {
+    // Seed an in_progress sprint with one pending feature + a progress.md so
+    // we can assert BOTH files are untouched on a rejected write (O3:
+    // performWrite encapsulates features.json + progress.md).
+    await seedFeatures(projectDir, {
+      project: BASE_FEATURES.project,
+      sprints: [
+        {
+          id: "s1",
+          status: "in_progress",
+          features: [
+            { id: "s1-feat-001", title: "f", status: "pending" },
+          ],
+        },
+      ],
+      metadata: BASE_FEATURES.metadata,
+    });
+    await seedProgress(projectDir);
+
+    const featuresBefore = await readFeaturesJson(projectDir);
+    const progressBefore = await readProgressMd(projectDir);
+
+    // sessionA holds a code-stage lock (simulating an active code pipeline).
+    await acquireLock({
+      projectDir,
+      sessionId: SESSION_A,
+      stage: "code",
+      sprintId: "s1",
+      holderLabel: "test-A",
+    });
+
+    // sessionB (different session) attempts update-feature-status →
+    // validateLockHeld → held_by_other → conflict, NO write. features.json
+    // AND progress.md unchanged (O3 — both writes live inside performWrite,
+    // which is never called on the conflict path).
+    const resB = await updateFeatureStatusTool.execute(
+      { feature_id: "s1-feat-001", status: "completed", project_dir: projectDir },
+      mockToolContext(projectDir, SESSION_B),
+    );
+    expect(resB).toContain("另一流水线正持有 ghs 运行期锁");
+    expect(resB).toContain("ghs-update-feature-status");
+    expect(resB).toContain("takeover=true");
+    expect(await readFeaturesJson(projectDir)).toBe(featuresBefore);
+    expect(await readProgressMd(projectDir)).toBe(progressBefore);
+
+    // sessionA is taken over by sessionC (M4: takeover overwrites the lock).
+    await acquireLock({
+      projectDir,
+      sessionId: SESSION_C,
+      stage: "code",
+      sprintId: "s1",
+      holderLabel: "test-C",
+      takeover: true,
+    });
+
+    // sessionA (the kicked session) now attempts update-feature-status → its
+    // lock was overwritten; validateLockHeld sees sessionC → held_by_other →
+    // conflict, NO write. This is the M1 anti-double-write wall: even though
+    // sessionA was the original owner, its next leaf write is rejected.
+    const resA = await updateFeatureStatusTool.execute(
+      { feature_id: "s1-feat-001", status: "completed", project_dir: projectDir },
+      mockToolContext(projectDir, SESSION_A),
+    );
+    expect(resA).toContain("另一流水线正持有 ghs 运行期锁");
+    expect(resA).toContain("ghs-update-feature-status");
+    expect(await readFeaturesJson(projectDir)).toBe(featuresBefore);
+    expect(await readProgressMd(projectDir)).toBe(progressBefore);
+  });
+
+  test("scenario 5 (standalone leaf short-lock, O2/O3): no stage-owner lock → append + update succeed and release the leaf lock", async () => {
+    // No pre-existing lock → both leaf writers degrade to a `leaf` short-lock
+    // (O2) around their writes, then release it.
+    await seedFeatures(projectDir, {
+      project: BASE_FEATURES.project,
+      sprints: [
+        {
+          id: "s1",
+          status: "in_progress",
+          features: [
+            { id: "s1-feat-001", title: "f", status: "pending" },
+          ],
+        },
+      ],
+      metadata: BASE_FEATURES.metadata,
+    });
+    await seedProgress(projectDir);
+
+    // append-feature standalone → leaf short-lock acquired → write → release.
+    const resAppend = await appendFeatureTool.execute(
+      {
+        sprint_id: "s1",
+        feature_id: "s1-feat-002",
+        category: "core",
+        priority: "high",
+        title: "新 feature",
+        description: "描述",
+        acceptance_criteria: ["AC1"],
+        estimated_complexity: "small",
+        project_dir: projectDir,
+      },
+      mockToolContext(projectDir, SESSION_A),
+    );
+    expect(resAppend).toContain("✅");
+    // leaf short-lock released — no stranded lock file.
+    expect(await readLock(projectDir)).toBeNull();
+
+    // update-feature-status standalone → leaf short-lock → features.json AND
+    // progress.md both updated (O3) → release.
+    const resUpdate = await updateFeatureStatusTool.execute(
+      { feature_id: "s1-feat-001", status: "completed", project_dir: projectDir },
+      mockToolContext(projectDir, SESSION_A),
+    );
+    expect(resUpdate).toContain("✅");
+
+    // features.json updated: the feature flipped to completed.
+    const featuresAfter = JSON.parse(await readFeaturesJson(projectDir)) as {
+      sprints: Array<{ features: Array<{ id: string; status: string }> }>;
+    };
+    const f = featuresAfter.sprints[0].features.find(
+      (x) => x.id === "s1-feat-001",
+    );
+    expect(f?.status).toBe("completed");
+    // progress.md updated (O3 — the second write inside performWrite).
+    const progressAfter = await readProgressMd(projectDir);
+    expect(progressAfter).toContain("s1-feat-001 → completed");
+    // leaf short-lock released again.
     expect(await readLock(projectDir)).toBeNull();
   });
 });
