@@ -67,4 +67,6 @@ export const CONTEXT_GREP_PROMPT = `未检测到 \`.codegraph/\` —— 本轮 p
 
 输出语言策略（与 CLAUDE.md 一致）：快照正文/模块描述/注释用中文；代码标识符、字段名、文件路径、类型名用英文。
 
-收到 subagent 的分隔标记输出后，请把整段（含标记）原样作为 \`snapshot\` 参数调用 \`ghs-plan-review\` 进入 snapshot 模式，parser 会提取快照并派发下一步 designer。`;
+收到 subagent 的分隔标记输出后，请把整段（含标记）原样作为 \`snapshot\` 参数调用 \`ghs-plan-review\` 进入 snapshot 模式，parser 会提取快照并派发下一步 designer。
+
+plan_id 透传（并发安全硬约定）：ghs-plan-start 返回的 plan_id 必须带给本次及后续每一次 ghs-plan-review 调用（作为 plan_id 参数），使 findActivePlanStatus 只读本流水线的 status 文件、跳过全局扫描——这是多窗口并发跑 plan 互不污染的前提。`;

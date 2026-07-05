@@ -58,4 +58,6 @@ export const PLAN_REVIEWER_PROMPT = `接下来请用 Task tool 派发 \`ghs-plan
 
 输出语言策略（与 CLAUDE.md 一致）：评审报告正文/章节标题/问题描述用中文；代码标识符、字段名、严重度枚举（Severe/Medium/Optimization）、Verdict 值（PASS/FAIL）用英文。
 
-收到 subagent 的分隔标记输出后，请把整段（含标记 + 裁决行）原样作为 \`review\` 参数调用 \`ghs-plan-review\` 进入 review 模式判定。PASS 则推进到 \`ghs-plan-finalize\`；FAIL 则触发 designer 修订（附评审报告）。`;
+收到 subagent 的分隔标记输出后，请把整段（含标记 + 裁决行）原样作为 \`review\` 参数调用 \`ghs-plan-review\` 进入 review 模式判定。PASS 则推进到 \`ghs-plan-finalize\`；FAIL 则触发 designer 修订（附评审报告）。
+
+plan_id 透传（并发安全硬约定）：ghs-plan-start 返回的 plan_id 必须带给本次及后续每一次 ghs-plan-review 调用（作为 plan_id 参数），使 findActivePlanStatus 只读本流水线的 status 文件、跳过全局扫描——这是多窗口并发跑 plan 互不污染的前提。`;

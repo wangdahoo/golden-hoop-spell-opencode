@@ -21,10 +21,11 @@
 //
 // Scope: PROSE_FILES are limited to files that EMIT prose instructions consumed
 // by the main AI (code.ts / sprint.ts dispatch text + feature-impl.ts /
-// sprint-planning.ts prompt templates). Pure-function files under
-// `src/lib/scripts/*.ts` are NOT included — their file names / imports
-// legitimately contain the stems without the `ghs-` prefix, and they produce
-// no prose instructions.
+// sprint-planning.ts prompt templates + the plan-dispatcher dispatch prompts
+// context-codegraph.ts / context-grep.ts / plan-designer.ts / plan-reviewer.ts,
+// added in s1-feat-007). Pure-function files under `src/lib/scripts/*.ts` are
+// NOT included — their file names / imports legitimately contain the stems
+// without the `ghs-` prefix, and they produce no prose instructions.
 
 import { expect, test, describe } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -38,6 +39,10 @@ const PROSE_FILES = [
   "src/tools/sprint.ts",
   "src/prompts/feature-impl.ts",
   "src/prompts/sprint-planning.ts",
+  "src/prompts/context-codegraph.ts",
+  "src/prompts/context-grep.ts",
+  "src/prompts/plan-designer.ts",
+  "src/prompts/plan-reviewer.ts",
 ] as const;
 
 /** Tool-name stems that must always be `ghs-`-prefixed in prose. */

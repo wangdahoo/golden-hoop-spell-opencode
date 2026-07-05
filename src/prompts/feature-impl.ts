@@ -75,4 +75,6 @@ This is an isolated task. Disregard prior context, assume nothing, read files fr
 
 语言策略（与 CLAUDE.md 一致）：commit message 与任何文档用中文正文；代码标识符、字段名、枚举值、文件路径、日志/错误信息、完成信号 token 用英文。
 
-收到 subagent 返回后，把原始输出按 Verification Phase 交给 ghs-parse-completion-signal tool 解析（\`status: completed | blocked | unknown\`），据此调 ghs-update-feature-status 更新 features.json——该 tool 会在 feature 进入 completed/blocked 时自动追加一条 .ghs/progress.md 会话记录，subagent 与 orchestrator 都无需手动维护 progress.md。unknown 时走 Format Recovery 重试，耗尽后用 AskUserQuestion 让用户裁决。`;
+收到 subagent 返回后，把原始输出按 Verification Phase 交给 ghs-parse-completion-signal tool 解析（\`status: completed | blocked | unknown\`），据此调 ghs-update-feature-status 更新 features.json——该 tool 会在 feature 进入 completed/blocked 时自动追加一条 .ghs/progress.md 会话记录，subagent 与 orchestrator 都无需手动维护 progress.md。unknown 时走 Format Recovery 重试，耗尽后用 AskUserQuestion 让用户裁决。
+
+运行期锁（多流水线并发）：ghs-update-feature-status 是 leaf writer，写前会 validateLockHeld。若返回冲突文案（另一 session 持有 .ghs/active.lock），说明本窗口已被接管或另一窗口正在推进 sprint/code——不要重试写入，按冲突文案的三选一（takeover/wait/cancel）让用户在 chat 中裁决（详见 SKILL.md § Multi-Pipeline Concurrency）。`;

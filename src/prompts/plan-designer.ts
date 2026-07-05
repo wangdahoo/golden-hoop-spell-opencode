@@ -56,7 +56,9 @@ export const PLAN_DESIGNER_PROMPT = `接下来请用 Task tool 派发 \`ghs-plan
 
 输出语言策略（与 CLAUDE.md 一致）：方案正文/章节标题/风险描述用中文；代码标识符、字段名、枚举值、文件路径、日志/错误信息用英文。
 
-收到 subagent 的分隔标记输出后，请把整段（含标记）原样作为 \`plan\` 参数调用 \`ghs-plan-review\` 进入 plan 模式评审。`;
+收到 subagent 的分隔标记输出后，请把整段（含标记）原样作为 \`plan\` 参数调用 \`ghs-plan-review\` 进入 plan 模式评审。
+
+plan_id 透传（并发安全硬约定）：ghs-plan-start 返回的 plan_id 必须带给本次及后续每一次 ghs-plan-review 调用（作为 plan_id 参数），使 findActivePlanStatus 只读本流水线的 status 文件、跳过全局扫描——这是多窗口并发跑 plan 互不污染的前提。`;
 
 // -----------------------------------------------------------------------------
 // Mechanism 二 §3.2.1 改造点(派发 prompt 选择器) — Feature s1-feat-008
@@ -127,7 +129,9 @@ Completion signal: output \`PLAN DESIGN COMPLETE\` when design is done; output \
 
 Output language policy (consistent with CLAUDE.md): plan body / section headings / risk descriptions in 中文; code identifiers, field names, enum values, file paths, and log/error strings in English.
 
-After receiving the agent's delimited output, pass the entire segment (markers included) verbatim as the \`plan\` argument to \`ghs-plan-review\` to enter plan-mode review.`;
+After receiving the agent's delimited output, pass the entire segment (markers included) verbatim as the \`plan\` argument to \`ghs-plan-review\` to enter plan-mode review.
+
+plan_id transparency (hard concurrency contract): the plan_id returned by \`ghs-plan-start\` MUST be carried into this and every subsequent \`ghs-plan-review\` call (as the plan_id argument), so findActivePlanStatus reads only this pipeline's status file and skips the global scan — this is what lets multiple windows run plan in parallel without cross-contamination.`;
 
 /**
  * Select the plan-designer dispatch prompt based on the configured backend.

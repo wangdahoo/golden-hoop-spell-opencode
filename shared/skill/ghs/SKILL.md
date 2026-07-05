@@ -21,7 +21,10 @@ stage's tool before the earlier one has completed:
 3. `ghs-plan-start` → `ghs-plan-review` → `ghs-plan-finalize` — the 3-role
    plan dispatcher (context snapshot → design → review → finalize). These
    three are a single logical phase; do not interleave other ghs stages
-   while a plan is mid-flight.
+   while a plan is mid-flight. This no-interleave rule is **per pipeline**:
+   within one pipeline you must not mix plan with sprint/code. It is
+   orthogonal to cross-window plan concurrency (any number of windows may
+   each run their own plan at once) — see § Multi-Pipeline Concurrency.
 4. `ghs-sprint` — decompose the finalized plan into atomic features
    (appended to `.ghs/features.json`).
 5. `ghs-code` — implement features **batch-by-batch by default** (conflict-
@@ -32,6 +35,106 @@ stage's tool before the earlier one has completed:
 
 `ghs-status` is safe to call at any point; every other tool belongs to a
 specific stage and its output names the next tool to call.
+
+## Multi-Pipeline Concurrency
+
+ghs supports multiple terminal sessions (windows) advancing ghs pipelines
+against the **same** project directory concurrently. Two isolation
+mechanisms keep them from corrupting each other's state.
+
+### Isolation ① — plan stage: cross-window concurrency (plan_id)
+
+The plan dispatcher (`ghs-plan-start` → `ghs-plan-review` →
+`ghs-plan-finalize`) is safe to run in **any number of windows at once**:
+
+- `ghs-plan-start` creates its `<plan_id>-status.json` with `O_EXCL`
+  semantics, so two windows that happen to pick the same slug do not
+  overwrite each other — the collision is auto-resolved by suffixing the
+  later one (`-2`, `-3`, …).
+- **`plan_id` transparency contract (mandatory)**: the `plan_id` returned
+  by `ghs-plan-start` MUST be passed to **every** subsequent
+  `ghs-plan-review` call (as the `plan_id` argument). This pins
+  `findActivePlanStatus` to that one status file and skips the legacy
+  global scan, so two parallel plans never read each other's status.
+  `ghs-plan-finalize` already accepts `plan_id`; no change is needed there.
+
+### Isolation ② — sprint/code stage: single-window exclusive (runtime lock)
+
+`ghs-sprint` / `ghs-code` / `ghs-append-feature` /
+`ghs-update-feature-status` / `ghs-archive` / `ghs-force-archive` all mutate
+the shared `.ghs/features.json` (and `progress.md`). They are serialized by
+a single on-disk runtime lock:
+
+- **Lock file**: `.ghs/active.lock` (JSON). Primary key = `session_id`;
+  `pid` + `acquired_at` are surfaced to the user for diagnosis but are
+  **never** used for automatic staleness judgement.
+- **Stage owners hold the lock across multiple calls**: `ghs-sprint`
+  acquires the lock and keeps it across the subsequent `ghs-append-feature`
+  calls (the whole sprint-planning session is one critical section).
+  `ghs-code` acquires the lock and releases it only at a terminal state
+  (the "no ready features" banner, or once the active sprint is archived).
+- **Leaf writers validate before every write (mandatory)**:
+  `ghs-append-feature` / `ghs-update-feature-status` call `validateLockHeld`
+  before touching disk. Held by the current session → write proceeds. Held
+  by **another** session → the write is refused with a conflict message
+  (this is the load-bearing defence against a taken-over window silently
+  double-writing). Not held at all (standalone call) → the writer briefly
+  takes a `leaf` short-lock around the single write, then releases it.
+
+### Conflict resolution — the three-way user choice
+
+When a tool sees the lock held by another session it does **not** silently
+declare that lock stale. It returns a conflict message listing the holder's
+`holder_label`, `pid`, `acquired_at`, `stage`, and `sprint_id`, and asks the
+user in chat to pick one of three:
+
+- **takeover** — re-invoke the same tool with `takeover: true` to overwrite
+  the lock. The displaced window's *next* write is then rejected by the leaf
+  writer's `validateLockHeld`, so it cannot silently corrupt state.
+- **wait** — let the other window finish and release, then retry.
+- **cancel** — abandon this attempt.
+
+`takeover` is accepted as a schema argument by `ghs-code`, `ghs-sprint`,
+`ghs-archive`, and `ghs-force-archive`.
+
+### Residual TOCTOU windows (documented, accepted)
+
+The threat model is **cooperative human-driven pipelines** (a developer
+running a few terminals), not adversarial concurrency. Two narrow TOCTOU
+windows remain by design and both are backstopped by the mandatory
+leaf-writer `validateLockHeld`:
+
+- **takeover overwrite**: between the read and the overwrite the original
+  holder may legitimately change, so the overwrite could stomp a freshly-
+  acquired lock. Backstop: the next leaf-writer write validates ownership
+  and refuses if it no longer matches.
+- **release unlink**: between the re-read and the `unlink` another session
+  may take over; the re-read-before-unlink narrows (does not eliminate)
+  this window, and any mistake self-heals on the next validated write.
+
+`O_EXCL` semantics are weak on some network filesystems (e.g. old NFS);
+keep `.ghs/` on a local volume — ghs guarantees mutual exclusion only on
+local filesystems.
+
+### Concurrent pipelines MUST share one projectDir (worktree note)
+
+The lock lives at `<projectDir>/.ghs/active.lock`. Two windows only mutex
+each other if they resolve to the **same** `projectDir`. In a git worktree
+setup, either share the main checkout's `.ghs/` or explicitly pass the same
+`project_dir` to every ghs tool — otherwise each worktree gets its own lock
+file and mutual exclusion silently fails.
+
+### Lock release boundaries & broken-flow recovery
+
+- `ghs-code` releases the lock at terminal states: the "no ready features"
+  banner, or when the active sprint is archived via `ghs-archive`.
+- `ghs-sprint` does **not** release after writing the skeleton (it holds
+  across `ghs-append-feature`); release happens as the flow advances to
+  `ghs-code` (which re-acquires idempotently under the same session).
+- If a pipeline is stuck (a session died holding the lock, or you are
+  unsure who holds it): call `ghs-status` (it surfaces the current
+  `.ghs/active.lock` holder), then consciously `takeover` from the window
+  you want to resume. Do not hand-edit or delete `.ghs/active.lock`.
 
 ## Plan-Start: Derive `slug_seed` from the Requirement
 
