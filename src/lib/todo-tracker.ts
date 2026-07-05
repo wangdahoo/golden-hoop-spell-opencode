@@ -128,7 +128,11 @@ export function recordTodoTick(sessionID: string): void {
  *
  * @param toolName   - full hyphenated tool name (e.g. `"ghs-plan-review"`).
  * @param projectDir - absolute project root (locates `.ghs/plans/`).
- * @param args       - the tool's raw args; only consulted for `ghs-code`.
+ * @param args       - the tool's raw args; consulted for `ghs-code`
+ *                     (feature_id / parallel) and for plan-* tools
+ *                     (`plan_id` pinning, s1-feat-001 — threads through to
+ *                     findActivePlanStatus so concurrent plan pipelines read
+ *                     their own status file).
  */
 export async function getStageSignature(
   toolName: string,
@@ -140,9 +144,13 @@ export async function getStageSignature(
     toolName === "ghs-plan-review" ||
     toolName === "ghs-plan-finalize"
   ) {
+    // s1-feat-001: thread `plan_id` (if supplied) so each concurrent plan
+    // pipeline reads its own status file rather than the latest active one.
+    const planId =
+      typeof args["plan_id"] === "string" ? (args["plan_id"] as string) : undefined;
     let status;
     try {
-      status = await findActivePlanStatus(projectDir);
+      status = await findActivePlanStatus(projectDir, planId);
     } catch {
       // R7: status.json read failure (I/O or Zod parse) → null, do not
       // propagate. Disconnect detection degrades to "inactive" for this

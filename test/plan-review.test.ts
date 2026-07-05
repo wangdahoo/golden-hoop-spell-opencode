@@ -151,6 +151,19 @@ describe("planReviewArgsSchema refine", () => {
     ).not.toThrow();
   });
 
+  test("accepts the payload alongside plan_id (s1-feat-001: excluded from exactly-one rule)", () => {
+    expect(() =>
+      planReviewArgsSchema.parse({ plan: "x", plan_id: "2026-07-05-alpha" }),
+    ).not.toThrow();
+    expect(() =>
+      planReviewArgsSchema.parse({
+        snapshot: "x",
+        project_dir: "/p",
+        plan_id: "2026-07-05-alpha",
+      }),
+    ).not.toThrow();
+  });
+
   test("rejects zero non-empty payloads", () => {
     expect(() => planReviewArgsSchema.parse({})).toThrow(/Exactly one/);
     expect(() => planReviewArgsSchema.parse({ snapshot: "" })).toThrow(/Exactly one/);
@@ -181,6 +194,8 @@ describe("planReviewTool surface", () => {
     expect(keys).toContain("plan");
     expect(keys).toContain("review");
     expect(keys).toContain("project_dir");
+    // s1-feat-001: plan_id pinning arg is now part of the surface.
+    expect(keys).toContain("plan_id");
   });
 
   test("MAX_BREACHES matches the source skill's hard cap (2)", () => {
@@ -1137,5 +1152,261 @@ describe("truncation recovery nudge (s2-feat-002)", () => {
     // No nudge — ok/exact path byte-identical to pre-Phase-2.
     expect(result).not.toContain("疑似截断");
     expect(result).not.toContain("Full output saved to");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// plan_id isolation (Feature s1-feat-001, plan §4 Phase 1)
+// -----------------------------------------------------------------------------
+//
+// Adds an optional `plan_id` arg so `ghs-plan-review` can pin the exact
+// active plan status file instead of doing a global scan — the isolation
+// mechanism that lets multiple terminal sessions run plan pipelines
+// concurrently without cross-reading each other's status. `plan_id` is
+// threaded through to `findActivePlanStatus` (precise read) and through
+// `getStageSignature` (so the workflow-chrome stage label also pins).
+//
+// Acceptance criteria:
+//   - AC #1: two active statuses seeded → findActivePlanStatus(dir, "planA")
+//            returns only planA (not planB, not the latest).
+//   - AC #2: plan_id omitted → legacy global scan returns the latest active.
+//   - AC #3: plan_id pointing to a terminal (approved) plan → null.
+//   - AC #4: execute receives plan_id → composeChrome's getStageSignature
+//            sees toolArgs["plan_id"] non-null and threads it (O7 回归).
+//   - AC #5: existing plan-review tests still pass with plan_id omitted
+//            (asserted implicitly — they do not pass plan_id).
+
+describe("plan_id isolation (s1-feat-001)", () => {
+  let tempRoot: string;
+  beforeEach(async () => {
+    tempRoot = realpathSync(await mkdtemp(join(tmpdir(), "ghs-pr-pid-")));
+  });
+  afterEach(async () => {
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  test("AC #1 findActivePlanStatus(dir, planId) returns ONLY the named plan (not latest, not the other)", async () => {
+    const planA = baselineStatus({
+      plan_id: "2026-07-05-alpha",
+      plan_file: "2026-07-05-alpha.md",
+      context_file: "2026-07-05-alpha-context.md",
+      status: "designing",
+      updated_at: "2026-07-05T09:00:00",
+    });
+    const planB = baselineStatus({
+      plan_id: "2026-07-05-beta",
+      plan_file: "2026-07-05-beta.md",
+      context_file: "2026-07-05-beta-context.md",
+      status: "reviewing",
+      // planB is newer — a global scan would pick it as "latest active".
+      updated_at: "2026-07-05T12:00:00",
+    });
+    await writePlanStatus(tempRoot, planA);
+    await writePlanStatus(tempRoot, planB);
+
+    const { findActivePlanStatus } = await import("../src/tools/plan-review");
+    const resultA = await findActivePlanStatus(tempRoot, "2026-07-05-alpha");
+    expect(resultA?.plan_id).toBe("2026-07-05-alpha");
+    expect(resultA?.status).toBe("designing");
+
+    const resultB = await findActivePlanStatus(tempRoot, "2026-07-05-beta");
+    expect(resultB?.plan_id).toBe("2026-07-05-beta");
+    expect(resultB?.status).toBe("reviewing");
+  });
+
+  test("AC #1b pinned read does NOT fall back to global scan when the named plan is missing", async () => {
+    // A decoy active plan exists — proves planId mode returns null rather
+    // than silently grabbing the unrelated active plan.
+    const decoy = baselineStatus({
+      plan_id: "2026-07-05-decoy",
+      plan_file: "2026-07-05-decoy.md",
+      context_file: "2026-07-05-decoy-context.md",
+      status: "designing",
+    });
+    await writePlanStatus(tempRoot, decoy);
+
+    const { findActivePlanStatus } = await import("../src/tools/plan-review");
+    const result = await findActivePlanStatus(tempRoot, "2026-07-05-missing");
+    expect(result).toBeNull();
+  });
+
+  test("AC #2 plan_id omitted/whitespace → legacy global scan returns the latest active", async () => {
+    const planA = baselineStatus({
+      plan_id: "2026-07-05-alpha",
+      plan_file: "2026-07-05-alpha.md",
+      context_file: "2026-07-05-alpha-context.md",
+      status: "designing",
+      updated_at: "2026-07-05T09:00:00",
+    });
+    const planB = baselineStatus({
+      plan_id: "2026-07-05-beta",
+      plan_file: "2026-07-05-beta.md",
+      context_file: "2026-07-05-beta-context.md",
+      status: "designing",
+      updated_at: "2026-07-05T12:00:00",
+    });
+    await writePlanStatus(tempRoot, planA);
+    await writePlanStatus(tempRoot, planB);
+
+    const { findActivePlanStatus } = await import("../src/tools/plan-review");
+    // Omitted entirely.
+    expect((await findActivePlanStatus(tempRoot))?.plan_id).toBe("2026-07-05-beta");
+    // Empty string → treated as omitted.
+    expect((await findActivePlanStatus(tempRoot, ""))?.plan_id).toBe("2026-07-05-beta");
+    // Whitespace-only → treated as omitted.
+    expect((await findActivePlanStatus(tempRoot, "   "))?.plan_id).toBe(
+      "2026-07-05-beta",
+    );
+  });
+
+  test("AC #3 plan_id pointing to a terminal (approved) plan → null", async () => {
+    const approved = baselineStatus({
+      plan_id: "2026-07-05-done",
+      plan_file: "2026-07-05-done.md",
+      context_file: "2026-07-05-done-context.md",
+      status: "approved",
+    });
+    await writePlanStatus(tempRoot, approved);
+
+    const { findActivePlanStatus } = await import("../src/tools/plan-review");
+    const result = await findActivePlanStatus(tempRoot, "2026-07-05-done");
+    expect(result).toBeNull();
+  });
+
+  test("AC #3b terminal check covers rejected + aborted too", async () => {
+    const rejected = baselineStatus({
+      plan_id: "2026-07-05-rej",
+      plan_file: "2026-07-05-rej.md",
+      context_file: "2026-07-05-rej-context.md",
+      status: "rejected",
+    });
+    const aborted = baselineStatus({
+      plan_id: "2026-07-05-abt",
+      plan_file: "2026-07-05-abt.md",
+      context_file: "2026-07-05-abt-context.md",
+      status: "aborted",
+    });
+    await writePlanStatus(tempRoot, rejected);
+    await writePlanStatus(tempRoot, aborted);
+
+    const { findActivePlanStatus } = await import("../src/tools/plan-review");
+    expect(await findActivePlanStatus(tempRoot, "2026-07-05-rej")).toBeNull();
+    expect(await findActivePlanStatus(tempRoot, "2026-07-05-abt")).toBeNull();
+  });
+
+  test("AC #4 O7 regression: getStageSignature threads plan_id to the named plan's stage", async () => {
+    const planA = baselineStatus({
+      plan_id: "2026-07-05-alpha",
+      plan_file: "2026-07-05-alpha.md",
+      context_file: "2026-07-05-alpha-context.md",
+      status: "designing",
+    });
+    const planB = baselineStatus({
+      plan_id: "2026-07-05-beta",
+      plan_file: "2026-07-05-beta.md",
+      context_file: "2026-07-05-beta-context.md",
+      status: "reviewing",
+    });
+    await writePlanStatus(tempRoot, planA);
+    await writePlanStatus(tempRoot, planB);
+
+    const { getStageSignature } = await import("../src/lib/todo-tracker");
+
+    // plan_id=alpha → signature derived from alpha's status (designing).
+    const sigAlpha = await getStageSignature("ghs-plan-review", tempRoot, {
+      plan_id: "2026-07-05-alpha",
+    });
+    expect(sigAlpha).toBe("plan:designing");
+
+    // plan_id=beta → signature derived from beta's status (reviewing). The
+    // non-plan_id global scan would have picked the newer one — so a
+    // distinct signature here proves the arg was threaded, not ignored.
+    const sigBeta = await getStageSignature("ghs-plan-review", tempRoot, {
+      plan_id: "2026-07-05-beta",
+    });
+    expect(sigBeta).toBe("plan:reviewing");
+
+    // No plan_id → global scan path still works (the global-scan tie-break
+    // picks the latest updated_at; both seeded at the same default timestamp
+    // here, so it returns one of them — non-null is the regression guard).
+    const sigAuto = await getStageSignature("ghs-plan-review", tempRoot, {});
+    expect(sigAuto === "plan:designing" || sigAuto === "plan:reviewing").toBe(true);
+  });
+
+  test("AC #4b integration: execute(plan_id=alpha) routes snapshot write to alpha only — beta untouched", async () => {
+    const planA = baselineStatus({
+      plan_id: "2026-07-05-alpha",
+      plan_file: "2026-07-05-alpha.md",
+      context_file: "2026-07-05-alpha-context.md",
+      status: "designing",
+    });
+    const planB = baselineStatus({
+      plan_id: "2026-07-05-beta",
+      plan_file: "2026-07-05-beta.md",
+      context_file: "2026-07-05-beta-context.md",
+      status: "designing",
+    });
+    await writePlanStatus(tempRoot, planA);
+    await writePlanStatus(tempRoot, planB);
+
+    const result = await planReviewTool.execute(
+      {
+        snapshot: snapshotBlob(longBody("Arch snapshot for alpha")),
+        plan_id: "2026-07-05-alpha",
+      },
+      mockCtx(tempRoot),
+    );
+
+    // Header pins alpha (not beta / not the latest).
+    expect(result).toContain("Active plan:       2026-07-05-alpha");
+    // alpha's context file is written.
+    expect(
+      await Bun.file(join(plansDir(tempRoot), planA.context_file)).exists(),
+    ).toBe(true);
+    // beta's context file is NOT created — isolation proven.
+    expect(
+      await Bun.file(join(plansDir(tempRoot), planB.context_file)).exists(),
+    ).toBe(false);
+  });
+
+  test("AC #4c execute(plan_id=missing) → 'no plan in progress' (no silent fallback to another active plan)", async () => {
+    // Seed an unrelated active plan that a global scan would have picked.
+    const decoy = baselineStatus({
+      plan_id: "2026-07-05-decoy",
+      plan_file: "2026-07-05-decoy.md",
+      context_file: "2026-07-05-decoy-context.md",
+      status: "designing",
+    });
+    await writePlanStatus(tempRoot, decoy);
+
+    const result = await planReviewTool.execute(
+      {
+        snapshot: snapshotBlob(longBody("body")),
+        plan_id: "2026-07-05-missing",
+      },
+      mockCtx(tempRoot),
+    );
+
+    // Pinned read found nothing → defensive isolation returns the
+    // "no active plan" branch (no chrome, no writes).
+    expect(result).toContain("没有进行中的 plan");
+    // Decoy untouched.
+    expect(
+      await Bun.file(join(plansDir(tempRoot), decoy.context_file)).exists(),
+    ).toBe(false);
+  });
+
+  test("AC #5 backward compat: execute without plan_id behaves exactly as before (global scan)", async () => {
+    // Single active plan, no plan_id → legacy path resolves it.
+    const status = baselineStatus({ status: "designing" });
+    await writePlanStatus(tempRoot, status);
+
+    const result = await planReviewTool.execute(
+      { snapshot: snapshotBlob(longBody("Arch snapshot")) },
+      mockCtx(tempRoot),
+    );
+
+    expect(result).toContain("Active plan:       2026-06-20-test-plan");
+    expect(result).toContain("snapshot 已提取");
   });
 });

@@ -119,8 +119,8 @@ const SNAPSHOT_OVERSIZE_WARNING_BYTES = 30_000;
  * supplying zero or more than one is the classic dispatcher ambiguity the
  * plan §5 risk row calls out.
  *
- * `project_dir` is orthogonal (path resolution) and excluded from the
- * "exactly one" rule.
+ * `project_dir` (path resolution) and `plan_id` (active-plan pinning,
+ * s1-feat-001) are orthogonal and excluded from the "exactly one" rule.
  */
 export const planReviewArgsSchema = z
   .object({
@@ -128,6 +128,7 @@ export const planReviewArgsSchema = z
     plan: z.string().optional(),
     review: z.string().optional(),
     project_dir: z.string().optional(),
+    plan_id: z.string().optional(),
   })
   .superRefine((args, ctx) => {
     const present: string[] = [];
@@ -181,12 +182,26 @@ export const MAX_BREACHES = 2;
  * single "active" plan's status — i.e. one whose lifecycle is not yet
  * terminal (`approved` / `rejected` / `aborted`).
  *
- * Rationale: the features.json AC pins the args surface to
- * `snapshot? / plan? / review? / project_dir?` (no `plan_id`). Yet
- * `status.json` is keyed by plan_id (s3-feat-005). We resolve the gap by
- * having the dispatcher track at most one active plan at a time: starting a
- * new plan (`ghs-plan-start`) is expected to archive/abandon any prior
- * active one. So at any moment there is 0 or 1 active status file.
+ * **`planId` pinning (Feature s1-feat-001, plan §4 Phase 1)**: when a
+ * non-empty `planId` is supplied, the function reads that one status file
+ * directly via `readPlanStatus` and skips the global scan entirely. This is
+ * the plan-stage isolation mechanism that lets multiple terminal sessions
+ * run `ghs-plan-*` concurrently without cross-pollinating each other's
+ * active status. A pinned read does NOT fall back to the global scan if the
+ * named plan is missing or terminal — it returns `null` so the caller
+ * surfaces "no such active plan" rather than silently grabbing an unrelated
+ * plan (defensive isolation). When `planId` is omitted/whitespace, the
+ * legacy global-scan behaviour is preserved verbatim (backward compatibility
+ * for single-plan flows + existing tests).
+ *
+ * Rationale for the default global scan: the features.json AC originally
+ * pinned the args surface to `snapshot? / plan? / review? / project_dir?`
+ * (no `plan_id`). Yet `status.json` is keyed by plan_id (s3-feat-005). The
+ * gap was resolved by having the dispatcher track at most one active plan
+ * at a time: starting a new plan (`ghs-plan-start`) is expected to
+ * archive/abandon any prior active one. So at any moment there is 0 or 1
+ * active status file. The `planId` parameter lifts that single-plan
+ * assumption for concurrent multi-pipeline use.
  *
  *   - 0 active  → returns `null` (caller surfaces "no plan in progress, run
  *                `ghs-plan-start` first").
@@ -197,7 +212,17 @@ export const MAX_BREACHES = 2;
  */
 export async function findActivePlanStatus(
   projectDir: string,
+  planId?: string,
 ): Promise<PlanStatus | null> {
+  // Pinned-read path (s1-feat-001): jump straight to the named status file,
+  // skipping the global scan. No fallback — defensive isolation.
+  if (planId && planId.trim().length > 0) {
+    const status = await readPlanStatus(projectDir, planId.trim());
+    if (status === null) return null;
+    if (isTerminal(status.status)) return null;
+    return status;
+  }
+
   const dir = plansDir(projectDir);
   let entries: string[];
   try {
@@ -1034,7 +1059,9 @@ export const planReviewTool = tool({
     "`review` (parse ghs-plan-reviewer output → PASS advances to ghs-plan-finalize, " +
     "FAIL triggers a revise round with max-rounds + breach caps). " +
     "Exactly one of snapshot/plan/review must be non-empty (Zod-enforced). " +
-    "Locates the active plan's status.json automatically (no plan_id arg).",
+    "Optional `plan_id` pins the active plan (skips the global status scan, " +
+    "enabling concurrent plan pipelines); when omitted, the latest active " +
+    "plan is located automatically.",
   args: {
     snapshot: tool.schema
       .string()
@@ -1064,6 +1091,18 @@ export const planReviewTool = tool({
       .describe(
         "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
       ),
+    plan_id: tool.schema
+      .string()
+      .optional()
+      .describe(
+        "Plan id (the `{date}-{slug}` string emitted by ghs-plan-start) used " +
+          "to pin the exact active plan status file. When supplied, " +
+          "findActivePlanStatus reads only `<plan_id>-status.json` and skips " +
+          "the global scan — enabling concurrent plan pipelines to advance " +
+          "without cross-reading each other's status. When omitted, the " +
+          "latest non-terminal status is auto-discovered (legacy single-plan " +
+          "behaviour).",
+      ),
   },
   async execute(
     args: {
@@ -1071,6 +1110,7 @@ export const planReviewTool = tool({
       plan?: string;
       review?: string;
       project_dir?: string;
+      plan_id?: string;
     },
     ctx: ToolContext,
   ): Promise<string> {
@@ -1084,8 +1124,10 @@ export const planReviewTool = tool({
       ? resolve(validated.project_dir)
       : resolveProjectDir(ctx);
 
-    // Locate the active plan.
-    const status = await findActivePlanStatus(projectDir);
+    // Locate the active plan. When `plan_id` is supplied, pin to that exact
+    // status file (s1-feat-001 plan-stage isolation); otherwise fall back to
+    // the legacy global scan.
+    const status = await findActivePlanStatus(projectDir, validated.plan_id);
     if (status === null) {
       const body = [
         "=== ghs-plan-review ===",
