@@ -35,9 +35,9 @@ export async function makeTempDir(prefix = "ghs-int-"): Promise<string> {
  * the ghs-* tools, so the stub is intentionally small. The `as never` cast
  * matches the convention in test/plan-review.test.ts.
  */
-export function mockToolContext(projectDir: string): never {
+export function mockToolContext(projectDir: string, sessionID = "integration-test-session"): never {
   return {
-    sessionID: "integration-test-session",
+    sessionID,
     messageID: "integration-test-message",
     agent: "integration-test-agent",
     directory: projectDir,
