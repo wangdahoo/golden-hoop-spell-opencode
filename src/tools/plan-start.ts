@@ -38,9 +38,10 @@ import { resolveProjectDir } from "../lib/project.ts";
 import { detectCodegraph } from "../lib/codegraph.ts";
 import {
   createInitialPlanStatus,
-  writePlanStatus,
+  writePlanStatusExclusive,
   stagingPath,
   DEFAULT_MAX_ROUNDS,
+  type PlanStatus,
 } from "../lib/state.ts";
 import { CONTEXT_CODEGRAPH_PROMPT } from "../prompts/context-codegraph.ts";
 import { CONTEXT_GREP_PROMPT } from "../prompts/context-grep.ts";
@@ -192,46 +193,70 @@ export const planStartTool = tool({
     // tool), and CJK / mixed-script requirements would collapse to an
     // unhelpful slug under slugify. An empty / missing `slug_seed` falls back
     // to the stable `plan` stem (backward-compatible with older callers /
-    // tests). With a semantic slug, same-day different-requirement starts no
-    // longer collide; same-day same-slug starts still overwrite (a fresh
-    // start resets the loop anyway).
+    // tests).
+    //
+    // M6 (same-day same-slug race): plan-start no longer overwrites a
+    // pre-existing `<plan_id>-status.json`. It tries the base slug first via
+    // O_EXCL (`writePlanStatusExclusive`); on `EEXIST` it retries with
+    // `-2`/`-3`/.../`-99` suffixes until a free slot is found. This lets two
+    // terminal sessions start plans with the same slug concurrently without
+    // one clobbering the other's status file. `writePlanStatus` (overwrite)
+    // remains in use by plan-review / finalize for in-place round advancement.
     const now = new Date();
-    const planId = buildPlanId(args.slug_seed?.trim() || "plan", now);
-    const slug = planId.replace(/^\d{4}-\d{2}-\d{2}-/, "");
+    const baseSlug = slugifyRequirement(args.slug_seed?.trim() || "plan");
+    const datePart = formatLocalDate(now);
 
-    // (4) Write the initial status.json. `createInitialPlanStatus` gives us
-    // the source-skill defaults (round 1, status `designing`, max_rounds 5,
-    // codegraph_available from the probe). `writePlanStatus` validates the
-    // object against the Zod schema and `mkdir -p`s `.ghs/plans/` first.
-    const status = createInitialPlanStatus({
-      planId,
-      planFile: `${planId}.md`,
-      contextFile: `${planId}-context.md`,
-      codegraphAvailable,
-      now,
-      maxRounds: DEFAULT_MAX_ROUNDS,
-    });
+    let statusPath: string | null = null;
+    let finalPlanId: string | null = null;
+    let status: PlanStatus | null = null;
+    let writeError: Error | null = null;
 
-    let statusPath: string;
-    try {
-      statusPath = await writePlanStatus(projectDir, status);
-    } catch (err) {
-      // writePlanStatus can throw if mkdir fails (permissions, disk full) or
-      // if the Zod schema somehow rejects our object (shouldn't happen for a
-      // freshly-built status). Surface the message so the AI/user can diagnose.
+    // Candidate suffixes: "", "-2", "-3", ..., "-99" (99 total).
+    const suffixes = [
+      "",
+      ...Array.from({ length: 98 }, (_, i) => `-${i + 2}`),
+    ];
+    for (const suffix of suffixes) {
+      const candidatePlanId = `${datePart}-${baseSlug}${suffix}`;
+      const candidateStatus = createInitialPlanStatus({
+        planId: candidatePlanId,
+        planFile: `${candidatePlanId}.md`,
+        contextFile: `${candidatePlanId}-context.md`,
+        codegraphAvailable,
+        now,
+        maxRounds: DEFAULT_MAX_ROUNDS,
+      });
+      try {
+        const result = await writePlanStatusExclusive(
+          projectDir,
+          candidateStatus,
+        );
+        if (result.created) {
+          statusPath = result.path;
+          finalPlanId = candidatePlanId;
+          status = candidateStatus;
+          break;
+        }
+        // result.created === false → EEXIST, try next suffix.
+      } catch (err) {
+        // Non-EEXIST error (mkdir failure, permissions, disk full, schema
+        // rejection). Stop the loop and surface the error below.
+        writeError = err as Error;
+        break;
+      }
+    }
+
+    // (4a) Non-EEXIST I/O error → surface it (mirrors the legacy failure path).
+    if (writeError !== null) {
       const errorBody = [
         "❌ ghs-plan-start failed to write initial status.json:",
         "",
-        (err as Error).message,
+        writeError.message,
         "",
         `Project directory: ${projectDir}`,
-        `Plan id:          ${planId}`,
+        `Slug (base):      ${baseSlug}`,
         `Codegraph path:   ${codegraphAvailable ? "codegraph" : "grep fallback"}`,
       ].join("\n");
-      // Even on the failure path we attempt the post-advance chrome read —
-      // the write may have partially succeeded OR a prior plan's status may
-      // still be active — but if no active plan exists getStageSignature
-      // returns null and the chrome is a no-op (judgment-table row 1).
       return composeChrome({
         ctx,
         projectDir,
@@ -240,6 +265,34 @@ export const planStartTool = tool({
         body: errorBody,
       });
     }
+
+    // (4b) All 99 candidates collided (EEXIST) → conflict message guiding the
+    // user to pick a unique slug_seed. Extreme edge case (same base slug
+    // already occupies 99 slots on the same day).
+    if (
+      statusPath === null ||
+      finalPlanId === null ||
+      status === null
+    ) {
+      const conflictBody = [
+        "❌ ghs-plan-start: 99 个候选 slug 均已被占用（O_EXCL 全部 EEXIST）。",
+        "",
+        `Base slug: "${baseSlug}"`,
+        `Date:      ${datePart}`,
+        "",
+        "请换一个唯一的 slug_seed 重试，或等待占用方完成。",
+      ].join("\n");
+      return composeChrome({
+        ctx,
+        projectDir,
+        toolName: "ghs-plan-start",
+        toolArgs: args,
+        body: conflictBody,
+      });
+    }
+
+    const planId = finalPlanId;
+    const slug = planId.replace(/^\d{4}-\d{2}-\d{2}-/, "");
 
     // (5) Select the context-collection dispatch directive based on the probe.
     // Both prompts are command-style LLM-facing text (中文 prose + English

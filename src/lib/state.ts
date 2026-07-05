@@ -23,7 +23,7 @@
 
 import { z } from "zod";
 import { resolve } from "node:path";
-import { mkdir, unlink } from "node:fs/promises";
+import { mkdir, open, unlink } from "node:fs/promises";
 
 // -----------------------------------------------------------------------------
 // Schema
@@ -385,4 +385,76 @@ export async function planStatusExists(
   planId: string,
 ): Promise<boolean> {
   return Bun.file(statusFilePath(projectDir, planId)).exists();
+}
+
+// -----------------------------------------------------------------------------
+// I/O — O_EXCL create (M6: plan-start same-day same-slug race)
+// -----------------------------------------------------------------------------
+
+/**
+ * Result of an O_EXCL create attempt for a plan status file.
+ *
+ * - `created: true`  — the file did not exist and was atomically created;
+ *   `path` is the absolute on-disk path written.
+ * - `created: false` — the file already existed (`EEXIST`); `reason: "exists"`.
+ *   The caller (`ghs-plan-start`'s dedup loop) treats this as "try the next
+ *   slug suffix".
+ *
+ * Never throws on `EEXIST`; other I/O errors propagate as thrown errors.
+ */
+export type WriteExclusiveResult =
+  | { created: true; path: string }
+  | { created: false; reason: "exists" };
+
+/**
+ * Atomically CREATE a plan's status file using `O_EXCL`
+ * (`fs.open(path, "wx")`).
+ *
+ * Unlike {@link writePlanStatus} — which OVERWRITES unconditionally and remains
+ * the writer for plan-review round advancement / plan-finalize approval — this
+ * helper refuses to clobber an existing file. It exists to close the
+ * same-day-same-slug race in `ghs-plan-start` (M6): when two terminal sessions
+ * concurrently start plans with the same slug, `O_EXCL` guarantees exactly one
+ * wins and the loser retries with a `-2`/`-3` suffix in plan-start's candidate
+ * loop. `writePlanStatus` (the overwrite writer) is deliberately left
+ * untouched so plan-review / finalize keep their in-place update semantics.
+ *
+ * Behaviour:
+ *   - Validates `status` against the Zod schema BEFORE touching disk (same
+ *     discipline as `writePlanStatus`).
+ *   - `mkdir -p`s `.ghs/plans/` first (idempotent, matches `writePlanStatus`).
+ *   - Opens with flag `"wx"` (O_EXCL on both posix and win32). If the path
+ *     already exists, Node throws an `EEXIST` error which we catch and surface
+ *     as `{ created: false, reason: "exists" }`.
+ *   - Pretty-prints JSON with 2-space indent and NO trailing newline, matching
+ *     `writePlanStatus` and the source skill's `json.dump(indent=2)`.
+ *
+ * @param projectDir - absolute host project root.
+ * @param status     - the status object to persist (validated + written).
+ * @returns `WriteExclusiveResult` — never throws on `EEXIST`.
+ */
+export async function writePlanStatusExclusive(
+  projectDir: string,
+  status: PlanStatus,
+): Promise<WriteExclusiveResult> {
+  const validated = PlanStatusSchema.parse(status);
+  const dir = plansDir(projectDir);
+  await mkdir(dir, { recursive: true });
+  const path = statusFilePath(projectDir, validated.plan_id);
+  let handle;
+  try {
+    handle = await open(path, "wx");
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code === "EEXIST") {
+      return { created: false, reason: "exists" };
+    }
+    throw err;
+  }
+  try {
+    await handle.writeFile(JSON.stringify(validated, null, 2));
+  } finally {
+    await handle.close();
+  }
+  return { created: true, path };
 }
