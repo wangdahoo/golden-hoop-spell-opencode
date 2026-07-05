@@ -51,6 +51,29 @@ import {
   getStageSignature,
   classifyStaleState,
 } from "../lib/todo-tracker.ts";
+import { acquireLock, releaseLock, buildLabel } from "../lib/runtime-lock.ts";
+import { renderConflictMessage } from "../lib/scripts/runtime-lock.ts";
+
+/**
+ * Derive the active sprint id for the runtime lock's `sprint_id` field.
+ *
+ * Mirrors `getReadyFeatures`'s sprint selection: the first sprint with
+ * `status === "in_progress"`, else the first sprint in the array, else null.
+ * Computed BEFORE acquireLock so the lock metadata records which sprint the
+ * holding code-pipeline is advancing.
+ */
+function activeSprintId(featuresData: FeaturesData): string | null {
+  const sprints = (featuresData["sprints"] as Feature[] | undefined) ?? [];
+  for (const s of sprints) {
+    if (s["status"] === "in_progress") {
+      return (s["id"] as string | undefined) ?? null;
+    }
+  }
+  if (sprints.length > 0) {
+    return (sprints[0]["id"] as string | undefined) ?? null;
+  }
+  return null;
+}
 
 /**
  * The `▶ NEXT ACTION` anchor text used by `ghs-code`'s chrome (mechanism-1
@@ -193,12 +216,22 @@ export const codeTool = tool({
       .describe(
         "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
       ),
+    takeover: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set true to forcibly take over the ghs runtime lock (.ghs/active.lock) " +
+        "when another session holds it. Use only after seeing a conflict message " +
+        "and consciously deciding to 接管 (the other session's subsequent writes " +
+        "will be rejected by the leaf-writer pre-write validate).",
+      ),
   },
   async execute(
     args: {
       feature_id?: string;
       parallel?: boolean;
       project_dir?: string;
+      takeover?: boolean;
     },
     ctx: ToolContext,
   ): Promise<string> {
@@ -235,105 +268,138 @@ export const codeTool = tool({
       ].join("\n");
     }
 
-    // (3) Find the current sprint's ready features. We pass NO sprint_id so
-    // getReadyFeatures mirrors the Python source: the first sprint with
-    // status === "in_progress", else the first sprint in the array. A feature
-    // is "ready" iff status === "pending", it is not in a dependency cycle,
-    // and every entry in its `dependencies` is in the completed set.
-    const result = getReadyFeatures(featuresData);
-    const ready = result.ready;
-    const skipped = result.skipped;
-    const cycles = result.cycles;
-
-    // (3a) Surface any detected dependency cycle as a loud warning block at
-    // the top of the result. Cycles make those features permanently un-ready,
-    // so ignoring them would silently drop work the user expects to see.
-    const cycleWarning =
-      cycles.length > 0
-        ? [
-            `⚠️ Detected ${cycles.length} dependency cycle(s) — these features are NOT ready until the cycle is broken:`,
-            ...cycles.map((c) => `  - ${c.join(" → ")}`),
-            "",
-          ].join("\n")
-        : "";
-
-    // (4) No-ready-feature short-circuit. AC: "无 ready feature 时返回 'no
-    // pending features' 提示". We keep the message informative (count of
-    // skipped + any cycle) so the AI can tell "sprint done" apart from
-    // "blocked by unmet deps".
-    if (ready.length === 0) {
-      const lines: string[] = [];
-      lines.push("=== ghs-code: no ready features ===");
-      lines.push("");
-      lines.push(`Project directory: ${projectDir}`);
-      if (cycleWarning) {
-        lines.push(cycleWarning.trimEnd());
-        lines.push("");
-      }
-      if (skipped.length === 0) {
-        lines.push("当前 sprint 没有 pending feature（已全部完成，或 sprint 为空）。");
-      } else {
-        lines.push(
-          `当前 sprint 有 ${skipped.length} 个 feature 但无一 ready（依赖未完成、状态非 pending、或处于依赖环中）。`,
-        );
-        lines.push("用 `ghs-status` 查看各 feature 状态与依赖。");
-      }
-      return lines.join("\n");
-    }
-
-    let body: string;
-    let stages: string[];
-
-    // (5) Branch on args.
-    //
-    // `feature_id` pin (highest priority) → validate + single-feature dispatch.
-    // `parallel === false` → explicit single-feature dispatch (auto-pick the
-    //   first ready feature). This is the opt-OUT of the now-default parallel
-    //   mode, kept so a caller can still drive one-feature-at-a-time.
-    // default (parallel omitted / true) → multi-feature dispatch plan (batches).
-    //   Parallel is the DEFAULT: a bare `ghs-code` call returns the batch plan
-    //   and the main AI implements features batch-by-batch.
-    const singleMode = args.parallel === false;
-
-    if (args.feature_id) {
-      body = dispatchPinnedFeature(
-        args.feature_id,
-        ready,
-        skipped,
-        projectDir,
-        cycleWarning,
-      );
-      // Pinned: single-feature checklist (one in_progress item).
-      stages = [`code:${args.feature_id}`];
-    } else if (singleMode) {
-      body = dispatchSingleFeature(ready[0], projectDir, cycleWarning);
-      const firstId = (ready[0]["id"] as string | undefined) ?? "default";
-      stages = [`code:${firstId}`];
-    } else {
-      body = dispatchParallelPlan(ready, projectDir, cycleWarning);
-      // Parallel: todoDirective's `stages` is the batch's feature ids
-      // (plan §3.1 注入点② — "code 并行场景的 todoDirective 按 batch 展开").
-      // The workflow-chrome signature is the extension point: passing the
-      // flat ready-feature id list expands a batch checklist via the same
-      // code path as the single-feature case.
-      stages = ready.map(
-        (f) => `code:${(f["id"] as string | undefined) ?? "unknown"}`,
-      );
-    }
-
-    // (6) Apply workflow chrome (mechanism-1 injection point ② main path).
-    // For `ghs-code`, getStageSignature derives the stage purely from args
-    // (code:<feature_id> | code:batch | code:default) and never reads disk,
-    // so the "post-advance" timing constraint is trivially satisfied — the
-    // signature reflects the call shape, not a mutable state machine.
-    return composeChrome({
-      ctx,
+    // (M3) acquireLock placed AFTER JSON parse succeeds and BEFORE
+    // getReadyFeatures, so the two early-return paths above (missing
+    // features.json, JSON parse failure) never acquire the lock and cannot
+    // leak it. code holds the lock across the dispatch→subagent→update loop
+    // (no release on the dispatch success path); the terminal "no ready
+    // features" banner path releases, and any exception releases via catch.
+    const sprintId = activeSprintId(featuresData);
+    const lock = await acquireLock({
       projectDir,
-      toolName: "ghs-code",
-      toolArgs: args,
-      stages,
-      body,
+      sessionId: ctx.sessionID,
+      stage: "code",
+      sprintId,
+      holderLabel: buildLabel(ctx),
+      takeover: args.takeover ?? false,
     });
+    if (!lock.acquired) {
+      return renderConflictMessage(
+        lock.holder,
+        "ghs-code 推进 feature 实施",
+        "ghs-code",
+      );
+    }
+
+    try {
+      // (3) Find the current sprint's ready features. We pass NO sprint_id so
+      // getReadyFeatures mirrors the Python source: the first sprint with
+      // status === "in_progress", else the first sprint in the array. A feature
+      // is "ready" iff status === "pending", it is not in a dependency cycle,
+      // and every entry in its `dependencies` is in the completed set.
+      const result = getReadyFeatures(featuresData);
+      const ready = result.ready;
+      const skipped = result.skipped;
+      const cycles = result.cycles;
+
+      // (3a) Surface any detected dependency cycle as a loud warning block at
+      // the top of the result. Cycles make those features permanently un-ready,
+      // so ignoring them would silently drop work the user expects to see.
+      const cycleWarning =
+        cycles.length > 0
+          ? [
+              `⚠️ Detected ${cycles.length} dependency cycle(s) — these features are NOT ready until the cycle is broken:`,
+              ...cycles.map((c) => `  - ${c.join(" → ")}`),
+              "",
+            ].join("\n")
+          : "";
+
+      // (4) No-ready-feature short-circuit — the TERMINAL state of the code
+      // loop. releaseLock here (plan §3.4: code 终态释放). AC: "无 ready
+      // feature 时返回 'no pending features' 提示".
+      if (ready.length === 0) {
+        const lines: string[] = [];
+        lines.push("=== ghs-code: no ready features ===");
+        lines.push("");
+        lines.push(`Project directory: ${projectDir}`);
+        if (cycleWarning) {
+          lines.push(cycleWarning.trimEnd());
+          lines.push("");
+        }
+        if (skipped.length === 0) {
+          lines.push("当前 sprint 没有 pending feature（已全部完成，或 sprint 为空）。");
+        } else {
+          lines.push(
+            `当前 sprint 有 ${skipped.length} 个 feature 但无一 ready（依赖未完成、状态非 pending、或处于依赖环中）。`,
+          );
+          lines.push("用 `ghs-status` 查看各 feature 状态与依赖。");
+        }
+        await releaseLock({ projectDir, sessionId: ctx.sessionID });
+        return lines.join("\n");
+      }
+
+      let body: string;
+      let stages: string[];
+
+      // (5) Branch on args.
+      //
+      // `feature_id` pin (highest priority) → validate + single-feature dispatch.
+      // `parallel === false` → explicit single-feature dispatch (auto-pick the
+      //   first ready feature). This is the opt-OUT of the now-default parallel
+      //   mode, kept so a caller can still drive one-feature-at-a-time.
+      // default (parallel omitted / true) → multi-feature dispatch plan (batches).
+      //   Parallel is the DEFAULT: a bare `ghs-code` call returns the batch plan
+      //   and the main AI implements features batch-by-batch.
+      const singleMode = args.parallel === false;
+
+      if (args.feature_id) {
+        body = dispatchPinnedFeature(
+          args.feature_id,
+          ready,
+          skipped,
+          projectDir,
+          cycleWarning,
+        );
+        // Pinned: single-feature checklist (one in_progress item).
+        stages = [`code:${args.feature_id}`];
+      } else if (singleMode) {
+        body = dispatchSingleFeature(ready[0], projectDir, cycleWarning);
+        const firstId = (ready[0]["id"] as string | undefined) ?? "default";
+        stages = [`code:${firstId}`];
+      } else {
+        body = dispatchParallelPlan(ready, projectDir, cycleWarning);
+        // Parallel: todoDirective's `stages` is the batch's feature ids
+        // (plan §3.1 注入点② — "code 并行场景的 todoDirective 按 batch 展开").
+        // The workflow-chrome signature is the extension point: passing the
+        // flat ready-feature id list expands a batch checklist via the same
+        // code path as the single-feature case.
+        stages = ready.map(
+          (f) => `code:${(f["id"] as string | undefined) ?? "unknown"}`,
+        );
+      }
+
+      // (6) Apply workflow chrome (mechanism-1 injection point ② main path).
+      // For `ghs-code`, getStageSignature derives the stage purely from args
+      // (code:<feature_id> | code:batch | code:default) and never reads disk,
+      // so the "post-advance" timing constraint is trivially satisfied — the
+      // signature reflects the call shape, not a mutable state machine.
+      // The dispatch success path returns WITHOUT releasing — code holds the
+      // lock across the subsequent parse-completion-signal / update-feature-
+      // status / re-call loop.
+      return await composeChrome({
+        ctx,
+        projectDir,
+        toolName: "ghs-code",
+        toolArgs: args,
+        stages,
+        body,
+      });
+    } catch (err) {
+      // Exception in the post-acquire section — release to avoid stranding
+      // the lock (plan §4 Phase 3 异常路径兜底).
+      await releaseLock({ projectDir, sessionId: ctx.sessionID });
+      throw err;
+    }
   },
 });
 

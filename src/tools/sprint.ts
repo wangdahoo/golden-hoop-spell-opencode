@@ -34,6 +34,8 @@ import { archiveSprints, formatLocalDate } from "../lib/scripts/archive-sprint.t
 import { appendSprint } from "../lib/scripts/append-sprint.ts";
 import { SPRINT_PLANNING_PROMPT } from "../prompts/sprint-planning.ts";
 import { resolveProjectDir } from "../lib/project.ts";
+import { acquireLock, releaseLock, buildLabel } from "../lib/runtime-lock.ts";
+import { renderConflictMessage } from "../lib/scripts/runtime-lock.ts";
 
 /**
  * Scan a parsed features.json for the largest sprint numeric id.
@@ -124,12 +126,22 @@ export const sprintTool = tool({
       .describe(
         "Absolute path of the project root. Defaults to the opencode session's worktree/directory.",
       ),
+    takeover: tool.schema
+      .boolean()
+      .optional()
+      .describe(
+        "Set true to forcibly take over the ghs runtime lock (.ghs/active.lock) " +
+        "when another session holds it. Use only after seeing a conflict message " +
+        "and consciously deciding to 接管 (the other session's subsequent writes " +
+        "will be rejected by the leaf-writer pre-write validate).",
+      ),
   },
   async execute(
     args: {
       sprint_name: string;
       goal: string;
       project_dir?: string;
+      takeover?: boolean;
     },
     ctx: ToolContext,
   ): Promise<string> {
@@ -147,67 +159,97 @@ export const sprintTool = tool({
       ].join("\n");
     }
 
-    // (c) Auto-archive completed sprints before creating a new one. If
-    // archiveSprints throws (e.g. corrupt features.json), surface the error
-    // rather than proceeding — appending on top of a corrupt file would
-    // mask the real problem.
-    let archivedSummary = "";
-    let archivedCount = 0;
-    const archived = await archiveSprints({ projectDir });
-    if (archived.length > 0) {
-      archivedCount = archived.length;
-      archivedSummary =
-        archived
-          .map(
-            (info) =>
-              `  - ${info.sprint_name} (${info.sprint_id}) → ${info.archive_path ?? "(no path)"}`,
-          )
-          .join("\n") + "\n\n";
-    }
-
-    // Re-read features.json AFTER archiving — archiveSprints mutates the
-    // file on disk (removes the archived sprint, updates metadata). Reading
-    // the fresh content keeps the in-memory copy in sync.
-    const text = await (Bun.file(featuresPath)).text();
-    const featuresData = JSON.parse(text) as Record<string, unknown>;
-
-    // (d) Auto-generate the next sprint id and append the skeleton.
-    const newSprintId = nextSprintId(projectDir, featuresData);
-    const updated = appendSprint(featuresData, {
-      id: newSprintId,
-      name: args.sprint_name,
-      goal: args.goal,
-      created_at: formatLocalDate(),
+    // (M3) acquireLock placed AFTER the features.json existence check passes
+    // and BEFORE archiveSprints, so the missing-file early-return path never
+    // acquires the lock and cannot leak it. sprint holds the lock across the
+    // skeleton write AND subsequent append-feature calls (no release on the
+    // success path); an exception in the post-acquire section releases to
+    // avoid stranding the lock.
+    const lock = await acquireLock({
+      projectDir,
+      sessionId: ctx.sessionID,
+      stage: "sprint",
+      sprintId: null,
+      holderLabel: buildLabel(ctx),
+      takeover: args.takeover ?? false,
     });
-
-    // (e) Write back to disk. 2-space indent matches every other features.json
-    // writer in the project (init-project.ts / archive-sprint.ts).
-    await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
-
-    // (f) Compose the result. Lead with the short summary, then the planning
-    // prompt so the AI can immediately start decomposing the goal.
-    const lines: string[] = [];
-    lines.push("=== ghs-sprint complete ===");
-    lines.push("");
-    lines.push(`Project directory: ${projectDir}`);
-    lines.push(`New sprint:        ${args.sprint_name} (${newSprintId})`);
-    lines.push(`Created at:        ${formatLocalDate()}`);
-    if (archivedCount > 0) {
-      lines.push("");
-      lines.push(
-        `Auto-archived ${archivedCount} completed sprint(s) before creating ${newSprintId}:`,
+    if (!lock.acquired) {
+      return renderConflictMessage(
+        lock.holder,
+        "ghs-sprint 创建 sprint 骨架",
+        "ghs-sprint",
       );
-      lines.push(archivedSummary.trimEnd());
     }
-    lines.push("");
-    lines.push(`Sprint skeleton written to ${featuresPath} (status: planning, features: []).`);
-    lines.push("");
-    lines.push("Next: decompose the sprint goal into atomic features and append each via");
-    lines.push("`ghs-append-feature` (status defaults to pending). Once all features are appended,");
-    lines.push("update the sprint status to in_progress, then call `ghs-code` to start implementation.");
-    lines.push("");
-    lines.push("--- sprint-planning prompt ---");
-    lines.push(SPRINT_PLANNING_PROMPT);
-    return lines.join("\n");
+
+    try {
+      // (c) Auto-archive completed sprints before creating a new one. If
+      // archiveSprints throws (e.g. corrupt features.json), surface the error
+      // rather than proceeding — appending on top of a corrupt file would
+      // mask the real problem.
+      let archivedSummary = "";
+      let archivedCount = 0;
+      const archived = await archiveSprints({ projectDir });
+      if (archived.length > 0) {
+        archivedCount = archived.length;
+        archivedSummary =
+          archived
+            .map(
+              (info) =>
+                `  - ${info.sprint_name} (${info.sprint_id}) → ${info.archive_path ?? "(no path)"}`,
+            )
+            .join("\n") + "\n\n";
+      }
+
+      // Re-read features.json AFTER archiving — archiveSprints mutates the
+      // file on disk (removes the archived sprint, updates metadata). Reading
+      // the fresh content keeps the in-memory copy in sync.
+      const text = await (Bun.file(featuresPath)).text();
+      const featuresData = JSON.parse(text) as Record<string, unknown>;
+
+      // (d) Auto-generate the next sprint id and append the skeleton.
+      const newSprintId = nextSprintId(projectDir, featuresData);
+      const updated = appendSprint(featuresData, {
+        id: newSprintId,
+        name: args.sprint_name,
+        goal: args.goal,
+        created_at: formatLocalDate(),
+      });
+
+      // (e) Write back to disk. 2-space indent matches every other features.json
+      // writer in the project (init-project.ts / archive-sprint.ts).
+      await Bun.write(featuresPath, JSON.stringify(updated, null, 2) + "\n");
+
+      // (f) Compose the result. Lead with the short summary, then the planning
+      // prompt so the AI can immediately start decomposing the goal.
+      const lines: string[] = [];
+      lines.push("=== ghs-sprint complete ===");
+      lines.push("");
+      lines.push(`Project directory: ${projectDir}`);
+      lines.push(`New sprint:        ${args.sprint_name} (${newSprintId})`);
+      lines.push(`Created at:        ${formatLocalDate()}`);
+      if (archivedCount > 0) {
+        lines.push("");
+        lines.push(
+          `Auto-archived ${archivedCount} completed sprint(s) before creating ${newSprintId}:`,
+        );
+        lines.push(archivedSummary.trimEnd());
+      }
+      lines.push("");
+      lines.push(`Sprint skeleton written to ${featuresPath} (status: planning, features: []).`);
+      lines.push("");
+      lines.push("Next: decompose the sprint goal into atomic features and append each via");
+      lines.push("`ghs-append-feature` (status defaults to pending). Once all features are appended,");
+      lines.push("update the sprint status to in_progress, then call `ghs-code` to start implementation.");
+      lines.push("");
+      lines.push("--- sprint-planning prompt ---");
+      lines.push(SPRINT_PLANNING_PROMPT);
+      return lines.join("\n");
+    } catch (err) {
+      // Exception in the post-acquire section — release to avoid stranding
+      // the lock. The success path above returns WITHOUT releasing (sprint
+      // holds the lock across the subsequent append-feature calls).
+      await releaseLock({ projectDir, sessionId: ctx.sessionID });
+      throw err;
+    }
   },
 });
